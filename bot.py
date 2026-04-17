@@ -3,8 +3,8 @@ import time
 from datetime import datetime, UTC
 
 # 🔐 ADD YOUR DETAILS
-BOT_TOKEN = "PASTE_YOUR_TOKEN_HERE"
-CHAT_ID = "PASTE_YOUR_CHAT_ID_HERE"
+BOT_TOKEN = "8522684488:AAG3bBfl_amlYwzi27AOqeqAfIHXJBdRZL8"
+CHAT_ID = "7216850185"
 
 API_KEY = "demo"  # you can upgrade later
 
