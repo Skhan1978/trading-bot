@@ -1,11 +1,12 @@
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, UTC
 
-BOT_TOKEN = "8522684488:AAG3bBfl_amlYwzi27AOqeqAfIHXJBdRZL8"
-CHAT_ID = "7216850185"
+# 🔐 ADD YOUR DETAILS
+BOT_TOKEN = "PASTE_YOUR_TOKEN_HERE"
+CHAT_ID = "PASTE_YOUR_CHAT_ID_HERE"
 
-API_KEY = "demo"  # replace later with your key if needed
+API_KEY = "demo"  # you can upgrade later
 
 sent_signals = set()
 
@@ -14,13 +15,20 @@ def send_telegram(msg):
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 def is_market_time():
-    hour = datetime.utcnow().hour
+    hour = datetime.now(UTC).hour
     return 11 <= hour <= 21  # premarket + market
 
 def get_active_stocks():
     url = f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={API_KEY}"
     try:
-        return requests.get(url).json()
+        res = requests.get(url)
+        data = res.json()
+
+        # ✅ FIX: ensure it's a list
+        if isinstance(data, list):
+            return data
+        else:
+            return []
     except:
         return []
 
@@ -28,7 +36,8 @@ def get_rsi(symbol):
     try:
         url = f"https://financialmodelingprep.com/api/v3/technical_indicator/1day/{symbol}?type=rsi&period=14&apikey={API_KEY}"
         data = requests.get(url).json()
-        return float(data[0]["rsi"])
+        if isinstance(data, list) and len(data) > 0:
+            return float(data[0]["rsi"])
     except:
         return None
 
@@ -36,7 +45,8 @@ def get_profile(symbol):
     try:
         url = f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={API_KEY}"
         data = requests.get(url).json()
-        return data[0]
+        if isinstance(data, list) and len(data) > 0:
+            return data[0]
     except:
         return {}
 
@@ -49,14 +59,21 @@ def sniper_scan():
     global sent_signals
 
     stocks = get_active_stocks()
+
+    # ✅ SAFETY CHECK (prevents crash)
+    if not stocks:
+        send_telegram("⚠️ Market data unavailable (API issue)")
+        return
+
     found = False
 
-    for stock in stocks[:15]:  # limit for stability
+    for stock in stocks[:10]:  # limit for stability
         try:
-            symbol = stock["symbol"]
-            price = float(stock["price"])
-            change = float(stock["changesPercentage"].replace('%',''))
+            symbol = stock.get("symbol")
+            price = float(stock.get("price", 0))
+            change = float(stock.get("changesPercentage", "0").replace('%',''))
 
+            # 🎯 BASIC FILTER
             if not (5 <= price <= 50 and change > 5):
                 continue
 
@@ -71,8 +88,8 @@ def sniper_scan():
             if not is_halal(profile):
                 continue
 
-            found = True
             sent_signals.add(symbol)
+            found = True
 
             entry = round(price * 1.01, 2)
             target = round(price * 1.10, 2)
@@ -87,14 +104,11 @@ Change: +{change}%
 
 RSI: {round(rsi,1)}
 
-Setup: Breakout / Pullback
-
 Entry: ${entry}
 Target: ${target}
 Stop: ${stop}
 
 Halal: ✅ PASS
-Confidence: ⭐⭐⭐⭐⭐
 """
 
             send_telegram(msg)
@@ -106,12 +120,12 @@ Confidence: ⭐⭐⭐⭐⭐
         send_telegram("⚠️ No strong halal sniper setups right now.")
 
 def main():
-    send_telegram("✅ ELITE BOT LIVE (Halal Sniper Mode)")
+    send_telegram("✅ ELITE BOT RUNNING")
 
     while True:
         if is_market_time():
             sniper_scan()
-        time.sleep(1800)  # every 30 min
+        time.sleep(1800)  # every 30 minutes
 
 if __name__ == "__main__":
     main()
