@@ -5,13 +5,18 @@ from datetime import datetime, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # 🔐 YOUR DETAILS
-BOT_TOKEN = "8522684488:AAHrUC1qBwUYK7x3-GMYVsSqONslUnH5WL8"
+BOT_TOKEN = "8522684488:AAFo-_8GjI2Bw0X9PHjbRCgNv1MFVWbNyz0"
 CHAT_ID = "7216850185"
 
 sent_signals = set()
 
-# ===== TELEGRAM FUNCTION =====
+# ===== TELEGRAM FUNCTION (ANTI-SPAM PROTECTED) =====
 def send_telegram(msg):
+    # 🚫 Block spam links
+    banned_words = ["http", "t.me", "www"]
+    if any(word in msg.lower() for word in banned_words):
+        return
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
@@ -60,7 +65,7 @@ def sniper_scan():
             price = float(stock.get("price", 0))
             change = float(stock.get("changesPercentage", "0").replace('%',''))
 
-            # 🎯 FILTER CONDITIONS
+            # 🎯 FILTER
             if not (5 <= price <= 50 and change > 5):
                 continue
 
@@ -95,7 +100,7 @@ Halal: ⚠️ Check manually
     if not found:
         send_telegram("⚠️ No strong setups right now.")
 
-# ===== MAIN BOT LOOP =====
+# ===== BOT LOOP =====
 def bot_loop():
     send_telegram("✅ BOT STARTED SUCCESSFULLY")
 
@@ -105,7 +110,7 @@ def bot_loop():
         if 11 <= hour <= 21:
             sniper_scan()
 
-        time.sleep(1800)  # every 30 minutes
+        time.sleep(1800)  # every 30 min
 
 # ===== MAIN =====
 if __name__ == "__main__":
