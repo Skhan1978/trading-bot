@@ -5,7 +5,7 @@ from datetime import datetime, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # 🔐 YOUR DETAILS
-BOT_TOKEN = "8522684488:AAG3bBfl_amlYwzi27AOqeqAfIHXJBdRZL8"
+BOT_TOKEN ="8522684488:AAHrUC1qBwUYK7x3-GMYVsSqONslUnH5WL8" 
 CHAT_ID = "7216850185"
 
 # ===== TELEGRAM FUNCTION =====
