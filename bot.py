@@ -37,7 +37,7 @@ def run_server():
 
 # ===== MARKET DATA =====
 def get_market_data():
-    url = "https://financialmodelingprep.com/api/v3/stock_market/actives?apikey=demo"
+    url = "https://financialmodelingprep.com/api/v3/stock_market/actives?apikey=wg6hAv7crwZdlFQcmoYwKdYqnK0cXaXD"
     try:
         res = requests.get(url)
         data = res.json()
