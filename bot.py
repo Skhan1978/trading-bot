@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # 🔐 YOUR DETAILS
 BOT_TOKEN = "8522684488:AAG3bBfl_amlYwzi27AOqeqAfIHXJBdRZL8"
-CHAT_ID = "7216850185
+CHAT_ID = "7216850185"
 "
 
 # ===== TELEGRAM FUNCTION =====
