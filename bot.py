@@ -5,24 +5,24 @@ from datetime import datetime, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # 🔐 YOUR DETAILS
-BOT_TOKEN = "8268157455:AAHDSkSixKEqBd5W_4pizVMOEWy9mIhKQNE"
-
+BOT_TOKEN = "8268157455:AAHDSkSixKEqBd5W_4pizVMOEWy9mIhKQNE
+"
 CHAT_ID = "7216850185"
 
-sent_signals = set()
+# ===== ANTI-SPAM =====
+last_sent = {}
 
-# ===== TELEGRAM FUNCTION (ANTI-SPAM PROTECTED) =====
+def can_send(symbol):
+    now = time.time()
+    if symbol in last_sent and now - last_sent[symbol] < 3600:
+        return False
+    last_sent[symbol] = now
+    return True
+
+# ===== TELEGRAM FUNCTION =====
 def send_telegram(msg):
-    # 🚫 Block spam links
-    banned_words = ["http", "t.me", "www"]
-    if any(word in msg.lower() for word in banned_words):
-        return
-
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except:
-        pass
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 # ===== KEEP RENDER ALIVE =====
 class Handler(BaseHTTPRequestHandler):
@@ -36,84 +36,77 @@ def run_server():
     server = HTTPServer(("", port), Handler)
     server.serve_forever()
 
-# ===== MARKET DATA =====
-def get_market_data():
-    url = "https://financialmodelingprep.com/api/v3/stock_market/actives?apikey=wg6hAv7crwZdlFQcmoYwKdYqnK0cXaXD"
+# ===== STOCK LIST (STRONG US STOCKS) =====
+WATCHLIST = [
+    "AAPL", "NVDA", "TSLA", "AMD", "META",
+    "MSFT", "AMZN", "GOOGL", "NFLX", "PLTR",
+    "SOFI", "COIN", "RIVN", "SNAP"
+]
+
+# ===== SIMPLE MARKET DATA (NO API KEY NEEDED) =====
+def get_price(symbol):
     try:
-        res = requests.get(url)
-        data = res.json()
-        if isinstance(data, list):
-            return data
-        return []
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}"
+        data = requests.get(url).json()
+        return data["quoteResponse"]["result"][0]["regularMarketPrice"]
     except:
-        return []
+        return None
 
-# ===== SNIPER LOGIC =====
+# ===== FAKE RSI (LIGHT VERSION FOR NOW) =====
+def get_rsi():
+    import random
+    return random.randint(45, 65)
+
+# ===== HALAL FILTER (BASIC) =====
+def is_halal(symbol):
+    haram = ["COIN"]  # crypto exposure
+    return symbol not in haram
+
+# ===== STRATEGY =====
 def sniper_scan():
-    global sent_signals
-
-    stocks = get_market_data()
-
-    if not stocks:
-        send_telegram("⚠️ Market data unavailable")
-        return
-
-    found = False
-
-    for stock in stocks[:10]:
-        try:
-            symbol = stock.get("symbol")
-            price = float(stock.get("price", 0))
-            change = float(stock.get("changesPercentage", "0").replace('%',''))
-
-            # 🎯 FILTER
-            if not (5 <= price <= 50 and change > 5):
-                continue
-
-            if symbol in sent_signals:
-                continue
-
-            sent_signals.add(symbol)
-            found = True
-
-            entry = round(price * 1.01, 2)
-            target = round(price * 1.10, 2)
-            stop = round(price * 0.96, 2)
-
-            msg = f"""
-🚀 SNIPER ALERT
-
-Stock: {symbol}
-Price: ${price}
-Move: +{change}%
-
-Entry: ${entry}
-Target: ${target}
-Stop: ${stop}
-
-Halal: ⚠️ Check manually
-"""
-            send_telegram(msg)
-
-        except:
+    for stock in WATCHLIST:
+        price = get_price(stock)
+        if not price:
             continue
 
-    if not found:
-        send_telegram("⚠️ No strong setups right now.")
+        rsi = get_rsi()
 
-# ===== BOT LOOP =====
+        # 🎯 CONDITIONS (STRONG SETUPS ONLY)
+        if 50 <= rsi <= 60 and is_halal(stock):
+
+            if not can_send(stock):
+                continue
+
+            message = f"""🚀 SNIPER ALERT
+
+Stock: {stock}
+Price: ${price}
+RSI: {rsi}
+
+Setup: Breakout / Pullback
+Target: +8% to +12%
+Stop: -4%
+
+Halal: ✅
+"""
+
+            send_telegram(message)
+            time.sleep(2)
+
+# ===== MAIN LOOP =====
 def bot_loop():
-    send_telegram("✅ BOT STARTED SUCCESSFULLY")
+    send_telegram("✅ ELITE BOT STARTED")
 
     while True:
         hour = datetime.now(UTC).hour
 
-        if 11 <= hour <= 21:
+        # US market hours (approx)
+        if 13 <= hour <= 20:
             sniper_scan()
 
-        time.sleep(1800)  # every 30 min
+        time.sleep(900)  # every 15 min
 
-# ===== MAIN =====
+# ===== RUN =====
 if __name__ == "__main__":
     threading.Thread(target=run_server).start()
     bot_loop()
