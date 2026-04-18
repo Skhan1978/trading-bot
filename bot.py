@@ -24,7 +24,7 @@ def send(msg):
     except:
         pass
 
-# ===== KEEP ALIVE =====
+# ===== SERVER =====
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -90,7 +90,6 @@ def is_halal(symbol):
 # ===== FIND BEST TRADE =====
 def find_best_trade():
     best = None
-    best_score = 0
 
     for stock in WATCHLIST:
         prices, volumes = get_data(stock)
@@ -105,35 +104,37 @@ def find_best_trade():
 
         breakout = price > max(prices[-10:])
         trend = prices[-1] > prices[-5] > prices[-10]
-        volume = current_vol > avg_vol * 1.8
-        rsi_ok = 52 <= rsi <= 65
+        volume = current_vol > avg_vol * 2   # stronger volume
+        rsi_ok = 52 <= rsi <= 62            # tighter RSI
 
         catalyst = has_news(stock) or is_gapping(prices)
 
         score = sum([breakout, trend, volume, rsi_ok, catalyst])
 
-        if score < 4 or not is_halal(stock):
+        # 🎯 ONLY PERFECT SETUPS
+        if score < 5 or not is_halal(stock):
             continue
 
-        entry = round(max(prices[-5:]) * 1.002, 2)
-        stop = round(min(prices[-5:]), 2)
+        breakout_level = max(prices[-5:])
+        entry = round(breakout_level, 2)
 
+        stop = round(min(prices[-5:]), 2)
         risk = entry - stop
         if risk <= 0:
             continue
 
         target = round(entry + risk * 2, 2)
 
-        if score > best_score:
-            best_score = score
-            best = {
-                "stock": stock,
-                "entry": entry,
-                "stop": stop,
-                "target": target,
-                "score": score,
-                "rsi": round(rsi,1)
-            }
+        best = {
+            "stock": stock,
+            "entry": entry,
+            "stop": stop,
+            "target": target,
+            "rsi": round(rsi,1),
+            "breakout_level": breakout_level
+        }
+
+        break  # only first perfect setup
 
     return best
 
@@ -141,42 +142,57 @@ def find_best_trade():
 def bot_loop():
     global last_sent_day, pending_trade
 
-    send("🔥 SNIPER BOT ACTIVE (CONFIRMATION MODE)")
+    print("BOT LOOP STARTED")
+    send("🔥 SNIPER BOT ACTIVE (FINAL MODE)")
 
     while True:
-        today = datetime.now(UTC).date()
+        try:
+            today = datetime.now(UTC).date()
 
-        # STEP 1: Find trade once per day
-        if not pending_trade and last_sent_day != today:
-            pending_trade = find_best_trade()
+            # FIND TRADE
+            if not pending_trade and last_sent_day != today:
+                pending_trade = find_best_trade()
 
-        # STEP 2: Wait for entry confirmation
-        if pending_trade:
-            current_price = get_price(pending_trade["stock"])
+            # WAIT FOR RETEST ENTRY (PRO ENTRY)
+            if pending_trade:
+                current_price = get_price(pending_trade["stock"])
 
-            if current_price and current_price >= pending_trade["entry"]:
-                msg = f"""🎯 TRADE CONFIRMED
+                if current_price:
+                    entry = pending_trade["entry"]
+
+                    # 🎯 RETEST ZONE ENTRY (NOT BREAKOUT CHASE)
+                    if entry * 0.995 <= current_price <= entry * 1.005:
+
+                        msg = f"""🎯 SNIPER TRADE CONFIRMED
 
 Stock: {pending_trade['stock']}
-Entry HIT: {pending_trade['entry']}
+
+Entry Zone: {entry}
+Current Price: {round(current_price,2)}
 
 Stop Loss: {pending_trade['stop']}
 Take Profit: {pending_trade['target']}
 
-Score: {pending_trade['score']}/5
 RSI: {pending_trade['rsi']}
+
+Strategy: Breakout + Retest + Volume
 
 Execute now.
 """
 
-                send(msg)
+                        send(msg)
 
-                last_sent_day = today
-                pending_trade = None
+                        last_sent_day = today
+                        pending_trade = None
 
-        time.sleep(60)
+            time.sleep(60)
+
+        except Exception as e:
+            print("ERROR:", e)
+            time.sleep(60)
 
 # ===== RUN =====
 if __name__ == "__main__":
-    threading.Thread(target=run_server).start()
+    threading.Thread(target=run_server, daemon=True).start()
+    time.sleep(2)
     bot_loop()
