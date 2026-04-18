@@ -4,6 +4,7 @@ import threading
 from datetime import datetime, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+# 🔐 YOUR CONFIG
 BOT_TOKEN = "8268157455:AAHDSkSixKEqBd5W_4pizVMOEWy9mIhKQNE"
 
 CHAT_ID = "7216850185"
@@ -34,13 +35,14 @@ def run_server():
     server = HTTPServer(("", 10000), Handler)
     server.serve_forever()
 
-# ===== WATCHLIST =====
+# ===== WATCHLIST (STRONG US STOCKS) =====
 WATCHLIST = [
     "AAPL","NVDA","TSLA","AMD","META",
-    "MSFT","AMZN","GOOGL","NFLX","PLTR","SOFI"
+    "MSFT","AMZN","GOOGL","NFLX","PLTR",
+    "SOFI","RIVN","COIN"
 ]
 
-# ===== GET HISTORICAL DATA =====
+# ===== MARKET DATA (YAHOO FREE) =====
 def get_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=15m"
@@ -52,10 +54,9 @@ def get_data(symbol):
     except:
         return None, None
 
-# ===== REAL RSI =====
+# ===== RSI CALCULATION =====
 def calculate_rsi(prices, period=14):
-    gains = []
-    losses = []
+    gains, losses = [], []
 
     for i in range(1, len(prices)):
         diff = prices[i] - prices[i-1]
@@ -75,7 +76,12 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ===== STRATEGY =====
+# ===== HALAL FILTER (BASIC) =====
+def is_halal(symbol):
+    haram_list = ["COIN"]  # crypto exposure
+    return symbol not in haram_list
+
+# ===== PRO+ STRATEGY =====
 def sniper_scan():
     for stock in WATCHLIST:
 
@@ -89,27 +95,29 @@ def sniper_scan():
         avg_volume = sum(volumes[-10:]) / 10
         current_volume = volumes[-1]
 
-        # 🎯 PRO CONDITIONS
+        # 🔥 PRO+ CONDITIONS
         breakout = current_price > max(prices[-10:])
-        volume_spike = current_volume > avg_volume * 1.5
-        rsi_good = 50 <= rsi <= 65
+        strong_trend = prices[-1] > prices[-5] > prices[-10]
+        volume_spike = current_volume > avg_volume * 2
+        rsi_good = 52 <= rsi <= 65
 
-        if breakout and volume_spike and rsi_good:
+        if breakout and strong_trend and volume_spike and rsi_good and is_halal(stock):
 
             if not can_send(stock):
                 continue
 
-            message = f"""🚀 PRO SNIPER ALERT
+            message = f"""🚀 PRO+ ELITE ALERT
 
 Stock: {stock}
 Price: ${round(current_price,2)}
 RSI: {rsi}
 
-Setup: Breakout + Volume Surge
-Target: +8% to +15%
+Setup: Breakout + Trend + Volume
+Target: +10% to +20%
 Stop: -4%
 
-Confidence: HIGH 📈
+Halal: ✅
+Momentum: VERY HIGH ⚡
 """
 
             send_telegram(message)
@@ -117,16 +125,16 @@ Confidence: HIGH 📈
 
 # ===== MAIN LOOP =====
 def bot_loop():
-    send_telegram("🔥 PRO BOT ACTIVATED")
+    send_telegram("🔥 PRO+ BOT ACTIVATED")
 
     while True:
         hour = datetime.now(UTC).hour
 
-        # US market hours
+        # US MARKET HOURS
         if 13 <= hour <= 20:
             sniper_scan()
 
-        time.sleep(900)
+        time.sleep(900)  # every 15 min
 
 # ===== RUN =====
 if __name__ == "__main__":
