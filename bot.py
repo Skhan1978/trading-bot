@@ -8,6 +8,7 @@ BOT_TOKEN = "8268157455:AAHDSkSixKEqBd5W_4pizVMOEWy9mIhKQNE"
 
 CHAT_ID = "7216850185"
 
+
 last_sent = {}
 
 # ===== TELEGRAM =====
@@ -55,7 +56,6 @@ def get_data(symbol):
 # ===== RSI =====
 def calculate_rsi(prices, period=14):
     gains, losses = [], []
-
     for i in range(1, len(prices)):
         diff = prices[i] - prices[i-1]
         gains.append(max(diff, 0))
@@ -70,27 +70,68 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ===== NEWS CHECK =====
+# ===== NEWS =====
 def has_news(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v1/finance/search?q={symbol}"
         data = requests.get(url).json()
-        news = data.get("news", [])
-        return len(news) > 0
+        return len(data.get("news", [])) > 0
     except:
         return False
 
-# ===== GAP DETECTION =====
+# ===== GAP =====
 def is_gapping(prices):
     try:
-        prev_close = prices[-2]
+        prev = prices[-2]
         current = prices[-1]
-        change = ((current - prev_close) / prev_close) * 100
-        return change > 2  # gap threshold
+        return ((current - prev) / prev) * 100 > 2
     except:
         return False
 
-# ===== STRATEGY =====
+# ===== HALAL FILTER =====
+def is_halal(symbol):
+    return symbol not in ["COIN"]
+
+# ===== PRE-MARKET =====
+def premarket_scan():
+    for stock in WATCHLIST:
+
+        prices, volumes = get_data(stock)
+        if not prices or len(prices) < 10:
+            continue
+
+        current = prices[-1]
+        prev = prices[-2]
+        gap = ((current - prev) / prev) * 100
+
+        avg_vol = sum(volumes[-10:]) / 10
+        current_vol = volumes[-1]
+
+        news = has_news(stock)
+
+        if gap > 2 and current_vol > avg_vol * 1.5 and news:
+
+            if not can_send(stock):
+                continue
+
+            msg = f"""🚀 PRE-MARKET SNIPER
+
+Stock: {stock}
+Gap: +{round(gap,2)}%
+Price: ${round(current,2)}
+
+Catalyst: NEWS 📰
+Volume: Strong
+
+Plan:
+Wait for breakout after market open
+Target: +10% to +25%
+"""
+
+            send_telegram(msg)
+            time.sleep(2)
+
+# ===== MAIN STRATEGY =====
 def sniper_scan():
     for stock in WATCHLIST:
 
@@ -98,21 +139,21 @@ def sniper_scan():
         if not prices or len(prices) < 20:
             continue
 
-        current_price = prices[-1]
+        price = prices[-1]
         rsi = round(calculate_rsi(prices), 1)
 
-        avg_volume = sum(volumes[-10:]) / 10
-        current_volume = volumes[-1]
+        avg_vol = sum(volumes[-10:]) / 10
+        current_vol = volumes[-1]
 
-        breakout = current_price > max(prices[-10:])
-        strong_trend = prices[-1] > prices[-5] > prices[-10]
-        volume_spike = current_volume > avg_volume * 1.8
-        rsi_good = 52 <= rsi <= 65
+        breakout = price > max(prices[-10:])
+        trend = prices[-1] > prices[-5] > prices[-10]
+        volume = current_vol > avg_vol * 1.8
+        rsi_ok = 52 <= rsi <= 65
 
         news = has_news(stock)
         gap = is_gapping(prices)
 
-        if breakout and strong_trend and volume_spike and rsi_good and (news or gap):
+        if breakout and trend and volume and rsi_ok and (news or gap) and is_halal(stock):
 
             if not can_send(stock):
                 continue
@@ -122,11 +163,11 @@ def sniper_scan():
             msg = f"""🚀 ELITE ALERT
 
 Stock: {stock}
-Price: ${round(current_price,2)}
+Price: ${round(price,2)}
 RSI: {rsi}
 
 Catalyst: {catalyst}
-Setup: Breakout + Volume + Trend
+Setup: Breakout + Trend + Volume
 
 Target: +10% to +20%
 Stop: -4%
@@ -137,11 +178,16 @@ Stop: -4%
 
 # ===== LOOP =====
 def bot_loop():
-    send_telegram("🔥 PRO+ NEWS BOT ACTIVE")
+    send_telegram("🔥 FULL ELITE SYSTEM ACTIVE")
 
     while True:
         hour = datetime.now(UTC).hour
 
+        # PRE-MARKET
+        if 10 <= hour < 13:
+            premarket_scan()
+
+        # MARKET HOURS
         if 13 <= hour <= 20:
             sniper_scan()
 
