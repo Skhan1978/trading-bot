@@ -5,8 +5,8 @@ from datetime import datetime, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # 🔐 YOUR DETAILS
-BOT_TOKEN = "8268157455:AAHDSkSixKEqBd5W_4pizVMOEWy9mIhKQNE
-"
+BOT_TOKEN = "8268157455:AAHDSkSixKEqBd5W_4pizVMOEWy9mIhKQNE"
+
 CHAT_ID = "7216850185"
 
 # ===== ANTI-SPAM =====
