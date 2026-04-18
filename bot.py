@@ -5,8 +5,9 @@ from datetime import datetime, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # 🔐 YOUR DETAILS
-BOT_TOKEN = "8767368247:AAGmMeJxQkfo9SfEuwB2z3uPJR0HPAO33dA"
-CHAT_ID = "7216850185"
+BOT_TOKEN = "8268157455:AAHDSkSixKEqBd5W_4pizVMOEWy9mIhKQNE"
+
+CHAT_ID = "8268157455"
 
 sent_signals = set()
 
