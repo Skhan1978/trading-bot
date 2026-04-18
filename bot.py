@@ -4,26 +4,27 @@ import threading
 from datetime import datetime, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-BOT_TOKEN = "8268157455:AAHDSkSixKEqBd5W_4pizVMOEWy9mIhKQNE"
-
+BOT_TOKEN = "8268157455:AAH--nPaj5uhoN22uu_wdukoqC3beY91N1Y"
 CHAT_ID = "7216850185"
 
+WATCHLIST = [
+    "AAPL","NVDA","TSLA","AMD","META",
+    "MSFT","AMZN","GOOGL","NFLX","PLTR",
+    "SOFI","RIVN"
+]
 
-last_sent = {}
+last_sent_day = None
+pending_trade = None
 
 # ===== TELEGRAM =====
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+def send(msg):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+    except:
+        pass
 
-def can_send(symbol):
-    now = time.time()
-    if symbol in last_sent and now - last_sent[symbol] < 3600:
-        return False
-    last_sent[symbol] = now
-    return True
-
-# ===== KEEP RENDER ALIVE =====
+# ===== KEEP ALIVE =====
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -31,25 +32,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"Running")
 
 def run_server():
-    server = HTTPServer(("", 10000), Handler)
-    server.serve_forever()
+    HTTPServer(("", 10000), Handler).serve_forever()
 
-# ===== WATCHLIST =====
-WATCHLIST = [
-    "AAPL","NVDA","TSLA","AMD","META",
-    "MSFT","AMZN","GOOGL","NFLX","PLTR",
-    "SOFI","RIVN"
-]
+# ===== DATA =====
+def get_price(symbol):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1m"
+        data = requests.get(url, timeout=10).json()
+        return data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+    except:
+        return None
 
-# ===== MARKET DATA =====
 def get_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=15m"
-        data = requests.get(url).json()
+        data = requests.get(url, timeout=10).json()
         result = data["chart"]["result"][0]
-        closes = result["indicators"]["quote"][0]["close"]
-        volumes = result["indicators"]["quote"][0]["volume"]
-        return closes, volumes
+        return result["indicators"]["quote"][0]["close"], result["indicators"]["quote"][0]["volume"]
     except:
         return None, None
 
@@ -70,77 +69,36 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ===== NEWS =====
+# ===== FILTERS =====
 def has_news(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v1/finance/search?q={symbol}"
-        data = requests.get(url).json()
+        data = requests.get(url, timeout=10).json()
         return len(data.get("news", [])) > 0
     except:
         return False
 
-# ===== GAP =====
 def is_gapping(prices):
     try:
-        prev = prices[-2]
-        current = prices[-1]
-        return ((current - prev) / prev) * 100 > 2
+        return ((prices[-1] - prices[-2]) / prices[-2]) * 100 > 2
     except:
         return False
 
-# ===== HALAL FILTER =====
 def is_halal(symbol):
     return symbol not in ["COIN"]
 
-# ===== PRE-MARKET =====
-def premarket_scan():
+# ===== FIND BEST TRADE =====
+def find_best_trade():
+    best = None
+    best_score = 0
+
     for stock in WATCHLIST:
-
-        prices, volumes = get_data(stock)
-        if not prices or len(prices) < 10:
-            continue
-
-        current = prices[-1]
-        prev = prices[-2]
-        gap = ((current - prev) / prev) * 100
-
-        avg_vol = sum(volumes[-10:]) / 10
-        current_vol = volumes[-1]
-
-        news = has_news(stock)
-
-        if gap > 2 and current_vol > avg_vol * 1.5 and news:
-
-            if not can_send(stock):
-                continue
-
-            msg = f"""🚀 PRE-MARKET SNIPER
-
-Stock: {stock}
-Gap: +{round(gap,2)}%
-Price: ${round(current,2)}
-
-Catalyst: NEWS 📰
-Volume: Strong
-
-Plan:
-Wait for breakout after market open
-Target: +10% to +25%
-"""
-
-            send_telegram(msg)
-            time.sleep(2)
-
-# ===== MAIN STRATEGY =====
-def sniper_scan():
-    for stock in WATCHLIST:
-
         prices, volumes = get_data(stock)
         if not prices or len(prices) < 20:
             continue
 
         price = prices[-1]
-        rsi = round(calculate_rsi(prices), 1)
+        rsi = calculate_rsi(prices)
 
         avg_vol = sum(volumes[-10:]) / 10
         current_vol = volumes[-1]
@@ -150,48 +108,73 @@ def sniper_scan():
         volume = current_vol > avg_vol * 1.8
         rsi_ok = 52 <= rsi <= 65
 
-        news = has_news(stock)
-        gap = is_gapping(prices)
+        catalyst = has_news(stock) or is_gapping(prices)
 
-        if breakout and trend and volume and rsi_ok and (news or gap) and is_halal(stock):
+        score = sum([breakout, trend, volume, rsi_ok, catalyst])
 
-            if not can_send(stock):
-                continue
+        if score < 4 or not is_halal(stock):
+            continue
 
-            catalyst = "NEWS 📰" if news else "GAP 🚀"
+        entry = round(max(prices[-5:]) * 1.002, 2)
+        stop = round(min(prices[-5:]), 2)
 
-            msg = f"""🚀 ELITE ALERT
+        risk = entry - stop
+        if risk <= 0:
+            continue
 
-Stock: {stock}
-Price: ${round(price,2)}
-RSI: {rsi}
+        target = round(entry + risk * 2, 2)
 
-Catalyst: {catalyst}
-Setup: Breakout + Trend + Volume
+        if score > best_score:
+            best_score = score
+            best = {
+                "stock": stock,
+                "entry": entry,
+                "stop": stop,
+                "target": target,
+                "score": score,
+                "rsi": round(rsi,1)
+            }
 
-Target: +10% to +20%
-Stop: -4%
-"""
+    return best
 
-            send_telegram(msg)
-            time.sleep(2)
-
-# ===== LOOP =====
+# ===== MAIN LOOP =====
 def bot_loop():
-    send_telegram("🔥 FULL ELITE SYSTEM ACTIVE")
+    global last_sent_day, pending_trade
+
+    send("🔥 SNIPER BOT ACTIVE (CONFIRMATION MODE)")
 
     while True:
-        hour = datetime.now(UTC).hour
+        today = datetime.now(UTC).date()
 
-        # PRE-MARKET
-        if 10 <= hour < 13:
-            premarket_scan()
+        # STEP 1: Find trade once per day
+        if not pending_trade and last_sent_day != today:
+            pending_trade = find_best_trade()
 
-        # MARKET HOURS
-        if 13 <= hour <= 20:
-            sniper_scan()
+        # STEP 2: Wait for entry confirmation
+        if pending_trade:
+            current_price = get_price(pending_trade["stock"])
 
-        time.sleep(900)
+            if current_price and current_price >= pending_trade["entry"]:
+                msg = f"""🎯 TRADE CONFIRMED
+
+Stock: {pending_trade['stock']}
+Entry HIT: {pending_trade['entry']}
+
+Stop Loss: {pending_trade['stop']}
+Take Profit: {pending_trade['target']}
+
+Score: {pending_trade['score']}/5
+RSI: {pending_trade['rsi']}
+
+Execute now.
+"""
+
+                send(msg)
+
+                last_sent_day = today
+                pending_trade = None
+
+        time.sleep(60)
 
 # ===== RUN =====
 if __name__ == "__main__":
