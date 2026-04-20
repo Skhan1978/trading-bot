@@ -46,7 +46,7 @@ def classify(stock):
 # ================ MAIN LOOP =================
 def run():
     print("🔥 SNIPER BOT ACTIVE")
-
+send_telegram("✅ BOT IS LIVE")
     sent_symbols = set()
 
     while True:
