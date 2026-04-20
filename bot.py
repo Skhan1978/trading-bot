@@ -5,7 +5,7 @@ import pytz
 
 # ================= CONFIG =================
 API_KEY = "wg6hAv7crwZdlFQcmoYwKdYqnK0cXaXD"
-TELEGRAM_TOKEN = "8268157455:AAH--nPaj5uhoN22uu_wdukoqC3beY91N1Y"
+TELEGRAM_TOKEN = "8268157455:AAF807pO5yASxEZ-RKSowuIA4LlGRWkE1Vs"
 CHAT_ID = "7216850185"
 
 
