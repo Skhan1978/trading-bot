@@ -3,10 +3,11 @@ import time
 from datetime import datetime
 import pytz
 
-API_KEY = "wg6hAv7crwZdlFQcmoYwKdYqnK0cXaXD"
+# TELEGRAM CONFIG
 TELEGRAM_TOKEN = "8268157455:AAF807pO5yASxEZ-RKSowuIA4LlGRWkE1Vs"
 CHAT_ID = "7216850185"
 
+SCAN_INTERVAL = 120
 uk = pytz.timezone('Europe/London')
 
 def send_telegram(message):
@@ -14,48 +15,91 @@ def send_telegram(message):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": message})
     except Exception as e:
-        print(e)
+        print("Telegram error:", e)
 
-def get_data():
-    url1 = f"https://financialmodelingprep.com/api/v3/stock_market/gainers?apikey={API_KEY}"
-    url2 = f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={API_KEY}"
+# ================= DATA (Yahoo Finance) =================
+def get_stocks():
+    url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+    params = {
+        "scrIds": "day_gainers",
+        "count": 25
+    }
 
-    g = requests.get(url1).json()
-    a = requests.get(url2).json()
+    try:
+        res = requests.get(url, params=params).json()
+        quotes = res["finance"]["result"][0]["quotes"]
+        return quotes
+    except Exception as e:
+        print("Yahoo error:", e)
+        return []
 
-    return (g[:5] if isinstance(g, list) else []) + (a[:5] if isinstance(a, list) else [])
+# ================= LOGIC =================
+def analyze(stock):
+    symbol = stock.get("symbol")
+    price = stock.get("regularMarketPrice", 0)
+    change = stock.get("regularMarketChangePercent", 0)
+    volume = stock.get("regularMarketVolume", 0)
 
+    if not price or not change:
+        return None
+
+    # filter real movers
+    if change < 5 or volume < 200000:
+        return None
+
+    entry_low = round(price * 0.98, 2)
+    entry_high = round(price * 1.02, 2)
+    breakout = round(price * 1.05, 2)
+    stop = round(price * 0.93, 2)
+
+    return {
+        "symbol": symbol,
+        "price": price,
+        "change": round(change, 2),
+        "volume": volume,
+        "entry": f"${entry_low} - ${entry_high}",
+        "breakout": f"${breakout}",
+        "stop": f"${stop}"
+    }
+
+# ================= MAIN =================
 def run():
-    print("🔥 FORCE SIGNAL BOT RUNNING")
-    send_telegram("🚀 BOT LIVE - GUARANTEED SIGNAL MODE")
+    print("🔥 LIVE YAHOO BOT")
+    send_telegram("🚀 BOT LIVE - REAL DATA MODE")
+
+    sent = set()
 
     while True:
-        try:
-            stocks = get_data()
+        now = datetime.now(uk)
 
-            if not stocks:
-                send_telegram("⚠️ No data from API — check API key")
-            else:
-                for s in stocks:
-                    symbol = s.get("symbol")
-                    price = s.get("price")
-                    change = s.get("changesPercentage")
-                    volume = s.get("volume")
+        # FULL US SESSION
+        if 9 <= now.hour <= 21:
+            try:
+                stocks = get_stocks()
 
-                    msg = f"""📊 MARKET ALERT
+                for stock in stocks:
+                    result = analyze(stock)
 
-{symbol}
-Price: ${price}
-Change: {change}%
-Volume: {volume}
+                    if result and result["symbol"] not in sent:
+                        msg = f"""🔥 TODAY TRADE
+
+{result['symbol']}
+Price: ${result['price']}
+Change: {result['change']}%
+Volume: {result['volume']}
+
+🎯 Entry: {result['entry']}
+🚀 Breakout: {result['breakout']}
+🛑 Stop: {result['stop']}
 """
 
-                    send_telegram(msg)
-                    time.sleep(1)
+                        send_telegram(msg)
+                        sent.add(result["symbol"])
+                        time.sleep(1)
 
-        except Exception as e:
-            send_telegram(f"Error: {e}")
+            except Exception as e:
+                print("Error:", e)
 
-        time.sleep(300)  # every 5 minutes
+        time.sleep(SCAN_INTERVAL)
 
 run()
