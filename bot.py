@@ -14,31 +14,36 @@ def send(msg):
 def analyze(symbol):
     stock = yf.Ticker(symbol)
 
-    data_1h = stock.history(period="5d", interval="1h")
+    # 1H data
+    data = stock.history(period="5d", interval="1h")
 
-    if data_1h.empty:
+    if data.empty:
         return None
 
-    price = round(data_1h["Close"].iloc[-1], 2)
+    price = round(data["Close"].iloc[-1], 2)
 
-    # Moving average
-    ma = data_1h["Close"].rolling(20).mean().iloc[-1]
+    # EMAs
+    ema20 = data["Close"].ewm(span=20).mean().iloc[-1]
+    ema50 = data["Close"].ewm(span=50).mean().iloc[-1]
 
-    # Trend check
-    if price < ma:
+    # ================= TREND FILTER =================
+    if not (price > ema20 > ema50):
         return None
 
-    # Pullback condition
-    recent_high = data_1h["High"].tail(20).max()
+    # ================= PULLBACK CONDITION =================
+    # Price must be near EMA20 (not far away)
+    if abs(price - ema20) / price > 0.015:
+        return None
 
-    if price > recent_high * 0.98:
-        return None  # avoid top entries
+    # ================= ENTRY =================
+    entry_low = round(ema20 * 0.995, 2)
+    entry_high = round(ema20 * 1.005, 2)
 
-    entry_low = round(price * 0.99, 2)
-    entry_high = round(price * 1.01, 2)
-
+    # ================= TARGET =================
     target = round(price * 1.05, 2)
-    stop = round(price * 0.96, 2)
+
+    # ================= STOP =================
+    stop = round(ema50 * 0.98, 2)
 
     return {
         "symbol": symbol,
@@ -49,23 +54,33 @@ def analyze(symbol):
     }
 
 def run():
-    send("🚀 SWING BOT ACTIVE (HALAL MODE)")
+    send("🚀 SWING EMA BOT ACTIVE")
+
+    sent = set()
 
     while True:
         for s in WATCHLIST:
+
             result = analyze(s)
 
-            if result:
-                msg = f"""📊 SWING BUY SIGNAL
+            if result and s not in sent:
+
+                msg = f"""📊 SWING BUY (EMA SETUP)
 
 {result['symbol']}
 Price: ${result['price']}
 
-✅ BUY: ${result['entry']}
-🎯 TARGET: ${result['target']}
+✅ BUY near EMA20: ${result['entry']}
+🎯 TARGET (2–3 days): ${result['target']}
 🛑 STOP: ${result['stop']}
+
+📌 Rule:
+- Only buy on pullback
+- Do NOT chase green candles
 """
+
                 send(msg)
+                sent.add(s)
                 time.sleep(2)
 
         time.sleep(900)
