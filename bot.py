@@ -16,7 +16,7 @@ def send_telegram(message):
         "text": message
     })
 
-# ===== TEST ROUTE =====
+# ===== HOME ROUTE =====
 @app.route("/")
 def home():
     return "✅ Bot is running"
@@ -35,7 +35,3 @@ def webhook():
     send_telegram(message)
 
     return {"status": "ok"}
-
-# ===== RUN =====
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
