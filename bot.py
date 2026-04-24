@@ -4,7 +4,15 @@ import os
 import time
 import threading
 
-app = Flask(__name__)
+app import threading
+
+
+def start_tracker():
+    thread = threading.Thread(target=run_tracker)
+    thread.daemon = True
+    thread.start()
+
+start_tracker()
 
 # ===== CONFIG =====
 TELEGRAM_TOKEN = os.environ.get("8268157455:AAF807pO5yASxEZ-RKSowuIA4LlGRWkE1Vs")
