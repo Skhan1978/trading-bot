@@ -1,88 +1,41 @@
-import yfinance as yf
+from flask import Flask, request
 import requests
-import time
+import os
 
-TELEGRAM_TOKEN = "8268157455:AAF807pO5yASxEZ-RKSowuIA4LlGRWkE1Vs"
-CHAT_ID = "7216850185"
+app = Flask(__name__)
 
-WATCHLIST = ["AAPL","TSLA","AMD","NVDA","META","AMZN"]
+# ===== CONFIG (SET IN RENDER ENV VARIABLES) =====
+TELEGRAM_TOKEN = os.environ.get("8268157455:AAF807pO5yASxEZ-RKSowuIA4LlGRWkE1Vs")
+TELEGRAM_CHAT_ID = os.environ.get("7216850185")
 
-def send(msg):
+# ===== SEND TELEGRAM =====
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    requests.post(url, data={
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    })
 
-def analyze(symbol):
-    stock = yf.Ticker(symbol)
+# ===== TEST ROUTE =====
+@app.route("/")
+def home():
+    return "✅ Bot is running"
 
-    # 1H data
-    data = stock.history(period="5d", interval="1h")
+# ===== WEBHOOK ROUTE =====
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.json
 
-    if data.empty:
-        return None
+    symbol = data.get("symbol", "N/A")
+    price = data.get("price", "N/A")
+    action = data.get("action", "N/A")
 
-    price = round(data["Close"].iloc[-1], 2)
+    message = f"📊 {symbol}\n💰 Price: {price}\n⚡ {action}"
 
-    # EMAs
-    ema20 = data["Close"].ewm(span=20).mean().iloc[-1]
-    ema50 = data["Close"].ewm(span=50).mean().iloc[-1]
+    send_telegram(message)
 
-    # ================= TREND FILTER =================
-    if not (price > ema20 > ema50):
-        return None
+    return {"status": "ok"}
 
-    # ================= PULLBACK CONDITION =================
-    # Price must be near EMA20 (not far away)
-    if abs(price - ema20) / price > 0.015:
-        return None
-
-    # ================= ENTRY =================
-    entry_low = round(ema20 * 0.995, 2)
-    entry_high = round(ema20 * 1.005, 2)
-
-    # ================= TARGET =================
-    target = round(price * 1.05, 2)
-
-    # ================= STOP =================
-    stop = round(ema50 * 0.98, 2)
-
-    return {
-        "symbol": symbol,
-        "price": price,
-        "entry": f"{entry_low}-{entry_high}",
-        "target": target,
-        "stop": stop
-    }
-
-def run():
-    send("🚀 SWING EMA BOT ACTIVE")
-
-    sent = set()
-
-    while True:
-        for s in WATCHLIST:
-
-            result = analyze(s)
-
-            if result and s not in sent:
-
-                msg = f"""📊 SWING BUY (EMA SETUP)
-
-{result['symbol']}
-Price: ${result['price']}
-
-✅ BUY near EMA20: ${result['entry']}
-🎯 TARGET (2–3 days): ${result['target']}
-🛑 STOP: ${result['stop']}
-
-📌 Rule:
-- Only buy on pullback
-- Do NOT chase green candles
-"""
-
-                send(msg)
-                sent.add(s)
-                time.sleep(2)
-
-        time.sleep(900)
-
-run()
+# ===== RUN =====
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
