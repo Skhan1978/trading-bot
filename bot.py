@@ -180,7 +180,7 @@ def run():
                 best_news = news_title
 
         # ENTRY
-        if best and best_score > 0.6 and market_is_good() and len(active_trades) < MAX_TRADES:
+        if best and best_score > 0.3 and market_is_good() and len(active_trades) < MAX_TRADES:
             symbol, price, conf = best
 
             if symbol not in last_signal_time or time.time() - last_signal_time[symbol] > 3600:
