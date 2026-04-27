@@ -13,10 +13,8 @@ NEWS_API_KEY = "412cc787d78a4975804e17b245ca3c68"
 
 WATCHLIST = ["AMD","NVDA","PLTR","TSLA","ENPH","AAPL","MSFT"]
 CHECK_INTERVAL = 180
-MAX_TRADES = 3
 
 active_trades = {}
-trade_log = []
 last_signal_time = {}
 
 # ===== TELEGRAM =====
@@ -110,42 +108,10 @@ def get_news(symbol):
     except:
         return "No news", False
 
-# ===== TRADE =====
-class Trade:
-    def __init__(self, entry):
-        self.entry = entry
-        self.highest = entry
-        self.locked = False
-
-    def update(self, price, symbol):
-        if price > self.highest:
-            self.highest = price
-
-        profit = ((price - self.entry) / self.entry) * 100
-
-        if profit >= 3 and not self.locked:
-            self.locked = True
-            return f"🔒 LOCK PROFIT\n{symbol} +{profit:.2f}%"
-
-        drop = ((self.highest - price) / self.highest) * 100
-
-        if self.locked and drop >= 2:
-            trade_log.append({
-                "symbol": symbol,
-                "entry": self.entry,
-                "exit": price,
-                "profit": profit
-            })
-
-            del active_trades[symbol]
-            return f"⚠️ EXIT NOW\n{symbol} secured {profit:.2f}%"
-
-        return None
-
 # ===== ENGINE =====
 def run():
-    print("🚀 BOT RUNNING", flush=True)
-    send("✅ Bot is LIVE and scanning...")
+    print("🚀 BOT THREAD STARTED", flush=True)
+    send("🔥 BOT THREAD STARTED")
 
     while True:
         print("Loop running...", flush=True)
@@ -187,32 +153,12 @@ Confidence: {conf:.2f}
 📰 {best_news}
 """)
 
-            # Only track trades if decent confidence
-            if conf > 0.2:
-                if symbol not in last_signal_time or time.time() - last_signal_time[symbol] > 600:
-                    active_trades[symbol] = Trade(price)
-                    last_signal_time[symbol] = time.time()
-
-        # ===== MANAGE TRADES =====
-        for symbol in list(active_trades.keys()):
-            closes, _ = get_data(symbol)
-            if not closes:
-                continue
-
-            price = closes[-1]
-            alert = active_trades[symbol].update(price, symbol)
-
-            if alert:
-                send(alert)
-
         time.sleep(CHECK_INTERVAL)
 
-# ===== DASHBOARD =====
+# ===== START THREAD (CRITICAL FOR GUNICORN) =====
+threading.Thread(target=run).start()
+
+# ===== ROUTE =====
 @app.route("/")
 def home():
     return "✅ Bot Running"
-
-# ===== START =====
-if __name__ == "__main__":
-    threading.Thread(target=run).start()
-    app.run(host="0.0.0.0", port=10000)
