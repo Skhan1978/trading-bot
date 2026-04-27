@@ -2,6 +2,7 @@ from flask import Flask
 import requests
 import time
 import threading
+import os
 
 app = Flask(__name__)
 
@@ -18,17 +19,23 @@ trades = []
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
     except:
         pass
 
-# ===== DATA =====
+# ===== DATA (FIXED) =====
 def get_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers).json()
-        return res["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+        res = requests.get(url, headers=headers, timeout=5).json()
+
+        closes = res["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+
+        # 🔥 CLEAN DATA (REMOVE NONE)
+        closes = [c for c in closes if c is not None]
+
+        return closes
     except:
         return None
 
@@ -40,17 +47,22 @@ def rsi(closes, period=14):
         gains.append(max(diff,0))
         losses.append(abs(min(diff,0)))
 
+    if len(gains) < period:
+        return 50
+
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
 
     if avg_loss == 0:
         return 100
+
     rs = avg_gain / avg_loss
     return 100 - (100/(1+rs))
 
-# ===== MARKET CONDITION =====
+# ===== MARKET CONDITION (SAFE) =====
 def market_condition():
     closes = get_data("SPY")
+
     if not closes or len(closes) < 50:
         return "weak"
 
@@ -67,17 +79,19 @@ def market_condition():
 # ===== ANALYSIS =====
 def analyze(symbol):
     closes = get_data(symbol)
+
     if not closes or len(closes) < 50:
         return None
 
     price = closes[-1]
+
     ma20 = sum(closes[-20:]) / 20
     ma50 = sum(closes[-50:]) / 50
     rsi_val = rsi(closes)
     momentum = (price - closes[-10]) / closes[-10]
     recent_high = max(closes[-20:])
 
-    # RSI safety filter
+    # ===== FILTER BAD DATA =====
     if rsi_val > 65 or rsi_val < 48:
         return None
 
@@ -111,7 +125,12 @@ def analyze(symbol):
 
 # ===== SCAN =====
 def scan_market():
-    return [s for s in (analyze(sym) for sym in WATCHLIST) if s]
+    setups = []
+    for symbol in WATCHLIST:
+        setup = analyze(symbol)
+        if setup:
+            setups.append(setup)
+    return setups
 
 # ===== TRADE TRACKING =====
 def check_trades():
@@ -153,36 +172,37 @@ Win Rate: {win_rate:.1f}%
 
 # ===== ENGINE =====
 def run():
-    send("📈 SWING BOT (SMART FINAL VERSION) STARTED")
+    send("📈 SWING BOT STARTED")
 
     while True:
-        check_trades()
+        try:
+            check_trades()
 
-        market = market_condition()
+            market = market_condition()
 
-        if market == "weak":
-            send("⛔ Market weak — no trades")
-            time.sleep(CHECK_INTERVAL)
-            continue
+            if market == "weak":
+                send("⛔ Market weak — no trades")
+                time.sleep(CHECK_INTERVAL)
+                continue
 
-        setups = sorted(scan_market(), key=lambda x: x["confidence"], reverse=True)
-        top_setups = setups[:3]
+            setups = sorted(scan_market(), key=lambda x: x["confidence"], reverse=True)
+            top_setups = setups[:3]
 
-        if not top_setups:
-            send("⚠️ No setups found")
-        else:
-            for setup in top_setups:
+            if not top_setups:
+                send("⚠️ No setups found")
+            else:
+                for setup in top_setups:
 
-                if setup["confidence"] >= 0.8:
-                    tag = "🔥 A+ SETUP"
-                elif setup["confidence"] >= 0.6:
-                    if market == "neutral":
+                    if setup["confidence"] >= 0.8:
+                        tag = "🔥 A+ SETUP"
+                    elif setup["confidence"] >= 0.6:
+                        if market == "neutral":
+                            continue
+                        tag = "⚡ B SETUP"
+                    else:
                         continue
-                    tag = "⚡ B SETUP"
-                else:
-                    continue
 
-                send(f"""{tag}
+                    send(f"""{tag}
 {setup['symbol']} @ {setup['price']:.2f}
 
 Confidence: {setup['confidence']}
@@ -195,22 +215,31 @@ RSI: {setup['rsi']:.1f}
 ⏳ Hold: 2–3 days
 """)
 
-                trades.append({
-                    "symbol": setup["symbol"],
-                    "entry": setup["entry_high"],
-                    "stop": setup["stop"],
-                    "target": setup["target"],
-                    "status": "open"
-                })
+                    trades.append({
+                        "symbol": setup["symbol"],
+                        "entry": setup["entry_high"],
+                        "stop": setup["stop"],
+                        "target": setup["target"],
+                        "status": "open"
+                    })
 
-        if len(trades) > 0 and len(trades) % 5 == 0:
-            report_stats()
+            if len(trades) > 0 and len(trades) % 5 == 0:
+                report_stats()
 
-        time.sleep(CHECK_INTERVAL)
+            time.sleep(CHECK_INTERVAL)
 
-# ===== START THREAD =====
-threading.Thread(target=run).start()
+        except Exception as e:
+            print("ERROR:", e)
+            time.sleep(10)
+
+# ===== START THREAD SAFELY =====
+if os.environ.get("RENDER"):
+    threading.Thread(target=run).start()
 
 @app.route("/")
 def home():
-    return "✅ Swing Bot Running"
+    return "✅ Bot Running"
+
+# ===== LOCAL RUN =====
+if __name__ == "__main__":
+    run()
