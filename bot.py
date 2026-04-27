@@ -2,61 +2,37 @@ from flask import Flask
 import requests
 import time
 import threading
-from sklearn.linear_model import LogisticRegression
 
 app = Flask(__name__)
 
 # ===== CONFIG =====
 TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 TELEGRAM_CHAT_ID = "7216850185"
-NEWS_API_KEY = "412cc787d78a4975804e17b245ca3c68"
 
-WATCHLIST = ["AMD","NVDA","PLTR","TSLA","ENPH","AAPL","MSFT"]
+WATCHLIST = ["AAPL","NVDA","MSFT","AMD","TSLA","META","GOOGL","AMZN"]
 CHECK_INTERVAL = 180
-
-active_trades = {}
-last_signal_time = {}
 
 # ===== TELEGRAM =====
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        r = requests.post(url, data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg
-        }, timeout=5)
-        print("Telegram:", r.text, flush=True)
-    except Exception as e:
-        print("Telegram ERROR:", e, flush=True)
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+    except:
+        pass
 
-# ===== DATA (FIXED WITH HEADERS) =====
+# ===== DATA =====
 def get_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers).json()
 
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-
-        response = requests.get(url, headers=headers, timeout=5)
-        print(f"{symbol} status:", response.status_code, flush=True)
-
-        data = response.json()
-
-        if "chart" not in data or not data["chart"]["result"]:
-            print(f"{symbol} invalid data", flush=True)
-            return None, None
-
-        result = data["chart"]["result"][0]
-
+        result = res["chart"]["result"][0]
         closes = result["indicators"]["quote"][0]["close"]
-        volumes = result["indicators"]["quote"][0]["volume"]
 
-        return closes, volumes
-
-    except Exception as e:
-        print(f"Data error for {symbol}:", e, flush=True)
-        return None, None
+        return closes
+    except:
+        return None
 
 # ===== RSI =====
 def rsi(closes, period=14):
@@ -74,106 +50,103 @@ def rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100/(1+rs))
 
-# ===== FEATURES =====
-def extract_features(closes, volumes):
+# ===== ANALYSIS =====
+def analyze(symbol):
+    closes = get_data(symbol)
+    if not closes or len(closes) < 50:
+        return None
+
     price = closes[-1]
+
+    ma20 = sum(closes[-20:]) / 20
+    ma50 = sum(closes[-50:]) / 50
     rsi_val = rsi(closes)
-    momentum = (price - closes[-5]) / closes[-5]
-    trend = closes[-1] - closes[-20]
+    momentum = (price - closes[-10]) / closes[-10]
+    recent_high = max(closes[-20:])
 
-    avg_vol = sum(volumes[-20:]) / 20
-    vol_spike = volumes[-1] / avg_vol if avg_vol else 1
+    # ===== SCORING SYSTEM =====
+    score = 0
 
-    return [rsi_val, momentum, trend, vol_spike]
+    if price > ma20: score += 1
+    if ma20 > ma50: score += 1
+    if 50 < rsi_val < 65: score += 1
+    if momentum > 0: score += 1
+    if price < recent_high * 0.98: score += 1
 
-# ===== ML MODEL =====
-model = LogisticRegression()
+    confidence = round(score / 5, 2)
 
-X_train = [
-    [55,0.03,2,1.8],
-    [60,0.05,3,2.0],
-    [65,0.04,2.5,1.9],
-    [45,-0.02,-2,0.8],
-    [70,0.07,5,2.5],
-    [50,0.01,1,1.2]
-]
+    # Skip weak setups
+    if confidence < 0.6:
+        return None
 
-y_train = [1,1,1,0,1,0]
-model.fit(X_train, y_train)
+    entry_low = price * 0.995
+    entry_high = price * 1.005
+    stop = entry_low * 0.97
+    target = entry_high * 1.05
 
-def predict_trade(features):
-    return model.predict_proba([features])[0][1]
+    return {
+        "symbol": symbol,
+        "price": price,
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "stop": stop,
+        "target": target,
+        "rsi": rsi_val,
+        "confidence": confidence
+    }
 
-# ===== NEWS =====
-def get_news(symbol):
-    try:
-        url = f"https://newsapi.org/v2/everything?q={symbol}&pageSize=1&apiKey={NEWS_API_KEY}"
-        res = requests.get(url, timeout=5).json()
+# ===== SCAN =====
+def scan_market():
+    setups = []
 
-        articles = res.get("articles", [])
-        if not articles:
-            return "No news", False
+    for symbol in WATCHLIST:
+        setup = analyze(symbol)
+        if setup:
+            setups.append(setup)
 
-        title = articles[0]["title"]
-        bullish_words = ["beat","growth","upgrade","surge","strong"]
-
-        bullish = any(w in title.lower() for w in bullish_words)
-
-        return title, bullish
-    except:
-        return "No news", False
+    return setups
 
 # ===== ENGINE =====
 def run():
-    print("🚀 BOT THREAD STARTED", flush=True)
-    send("🔥 BOT THREAD STARTED")
+    send("📈 SWING BOT (TOP 3 MODE) STARTED")
 
     while True:
-        print("Loop running...", flush=True)
+        setups = scan_market()
 
-        best = None
-        best_score = 0
-        best_news = "No catalyst"
+        # Sort by confidence
+        setups = sorted(setups, key=lambda x: x["confidence"], reverse=True)
 
-        for symbol in WATCHLIST:
-            print(f"Checking {symbol}", flush=True)
+        # Take top 3 only
+        top_setups = setups[:3]
 
-            closes, volumes = get_data(symbol)
-            if not closes:
-                continue
+        if not top_setups:
+            send("⚠️ No quality setups right now")
+        else:
+            for setup in top_setups:
 
-            features = extract_features(closes, volumes)
-            confidence = predict_trade(features)
+                if setup["confidence"] >= 0.8:
+                    tag = "🔥 A+ SETUP"
+                else:
+                    tag = "⚡ B SETUP"
 
-            print(f"{symbol} confidence: {confidence:.2f}", flush=True)
+                send(f"""{tag}
+{setup['symbol']} @ {setup['price']:.2f}
 
-            news_title, bullish = get_news(symbol)
-            if bullish:
-                confidence += 0.05
+Confidence: {setup['confidence']}
 
-            if confidence > best_score:
-                best_score = confidence
-                best = (symbol, closes[-1], confidence)
-                best_news = news_title
+✅ Entry: {setup['entry_low']:.2f} – {setup['entry_high']:.2f}
+🎯 Target: {setup['target']:.2f}
+🛑 Stop: {setup['stop']:.2f}
 
-        # ===== ALWAYS SEND TOP PICK =====
-        if best:
-            symbol, price, conf = best
-
-            send(f"""🚀 TOP PICK
-{symbol} @ {price}
-
-Confidence: {conf:.2f}
-
-📰 {best_news}
+RSI: {setup['rsi']:.1f}
+⏳ Hold: 2–3 days
 """)
 
         time.sleep(CHECK_INTERVAL)
 
-# ===== START THREAD (IMPORTANT FOR GUNICORN) =====
+# ===== START THREAD =====
 threading.Thread(target=run).start()
 
-# ===== ROUTE =====
 @app.route("/")
 def home():
-    return "✅ Bot Running"
+    return "✅ Swing Bot Running"
