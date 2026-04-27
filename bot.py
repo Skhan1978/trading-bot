@@ -29,16 +29,31 @@ def send(msg):
     except Exception as e:
         print("Telegram ERROR:", e, flush=True)
 
-# ===== DATA =====
+# ===== DATA (FIXED WITH HEADERS) =====
 def get_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
-        data = requests.get(url, timeout=5).json()["chart"]["result"][0]
 
-        closes = data["indicators"]["quote"][0]["close"]
-        volumes = data["indicators"]["quote"][0]["volume"]
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+
+        response = requests.get(url, headers=headers, timeout=5)
+        print(f"{symbol} status:", response.status_code, flush=True)
+
+        data = response.json()
+
+        if "chart" not in data or not data["chart"]["result"]:
+            print(f"{symbol} invalid data", flush=True)
+            return None, None
+
+        result = data["chart"]["result"][0]
+
+        closes = result["indicators"]["quote"][0]["close"]
+        volumes = result["indicators"]["quote"][0]["volume"]
 
         return closes, volumes
+
     except Exception as e:
         print(f"Data error for {symbol}:", e, flush=True)
         return None, None
@@ -155,7 +170,7 @@ Confidence: {conf:.2f}
 
         time.sleep(CHECK_INTERVAL)
 
-# ===== START THREAD (CRITICAL FOR GUNICORN) =====
+# ===== START THREAD (IMPORTANT FOR GUNICORN) =====
 threading.Thread(target=run).start()
 
 # ===== ROUTE =====
