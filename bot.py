@@ -12,7 +12,6 @@ TELEGRAM_CHAT_ID = "7216850185"
 WATCHLIST = ["AAPL","NVDA","MSFT","AMD","TSLA","META","GOOGL","AMZN"]
 CHECK_INTERVAL = 180
 
-# ===== TRADE STORAGE =====
 trades = []
 
 # ===== TELEGRAM =====
@@ -29,11 +28,7 @@ def get_data(symbol):
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers).json()
-
-        result = res["chart"]["result"][0]
-        closes = result["indicators"]["quote"][0]["close"]
-
-        return closes
+        return res["chart"]["result"][0]["indicators"]["quote"][0]["close"]
     except:
         return None
 
@@ -53,16 +48,21 @@ def rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100/(1+rs))
 
-# ===== MARKET FILTER =====
-def market_is_bullish():
+# ===== MARKET CONDITION =====
+def market_condition():
     closes = get_data("SPY")
     if not closes or len(closes) < 50:
-        return False
+        return "weak"
 
     ma20 = sum(closes[-20:]) / 20
     ma50 = sum(closes[-50:]) / 50
 
-    return ma20 > ma50
+    if ma20 > ma50 * 1.01:
+        return "strong"
+    elif ma20 > ma50:
+        return "neutral"
+    else:
+        return "weak"
 
 # ===== ANALYSIS =====
 def analyze(symbol):
@@ -71,18 +71,16 @@ def analyze(symbol):
         return None
 
     price = closes[-1]
-
     ma20 = sum(closes[-20:]) / 20
     ma50 = sum(closes[-50:]) / 50
     rsi_val = rsi(closes)
     momentum = (price - closes[-10]) / closes[-10]
     recent_high = max(closes[-20:])
 
-    # ===== FILTER BAD TRADES =====
+    # RSI safety filter
     if rsi_val > 65 or rsi_val < 48:
         return None
 
-    # ===== SCORING =====
     score = 0
     if price > ma20: score += 1
     if ma20 > ma50: score += 1
@@ -113,17 +111,10 @@ def analyze(symbol):
 
 # ===== SCAN =====
 def scan_market():
-    setups = []
-    for symbol in WATCHLIST:
-        setup = analyze(symbol)
-        if setup:
-            setups.append(setup)
-    return setups
+    return [s for s in (analyze(sym) for sym in WATCHLIST) if s]
 
-# ===== TRADE CHECK =====
+# ===== TRADE TRACKING =====
 def check_trades():
-    global trades
-
     for trade in trades:
         if trade["status"] != "open":
             continue
@@ -145,8 +136,8 @@ def check_trades():
 # ===== STATS =====
 def report_stats():
     total = len(trades)
-    wins = len([t for t in trades if t["status"] == "win"])
-    losses = len([t for t in trades if t["status"] == "loss"])
+    wins = sum(1 for t in trades if t["status"] == "win")
+    losses = sum(1 for t in trades if t["status"] == "loss")
 
     if total == 0:
         return
@@ -162,30 +153,34 @@ Win Rate: {win_rate:.1f}%
 
 # ===== ENGINE =====
 def run():
-    send("📈 SWING BOT (FULL SYSTEM) STARTED")
+    send("📈 SWING BOT (SMART FINAL VERSION) STARTED")
 
     while True:
-
         check_trades()
 
-        if not market_is_bullish():
-            send("⛔ Market weak (SPY bearish) — no trades")
+        market = market_condition()
+
+        if market == "weak":
+            send("⛔ Market weak — no trades")
             time.sleep(CHECK_INTERVAL)
             continue
 
-        setups = scan_market()
-        setups = sorted(setups, key=lambda x: x["confidence"], reverse=True)
+        setups = sorted(scan_market(), key=lambda x: x["confidence"], reverse=True)
         top_setups = setups[:3]
 
         if not top_setups:
-            send("⚠️ No high-quality setups right now")
+            send("⚠️ No setups found")
         else:
             for setup in top_setups:
 
                 if setup["confidence"] >= 0.8:
                     tag = "🔥 A+ SETUP"
-                else:
+                elif setup["confidence"] >= 0.6:
+                    if market == "neutral":
+                        continue
                     tag = "⚡ B SETUP"
+                else:
+                    continue
 
                 send(f"""{tag}
 {setup['symbol']} @ {setup['price']:.2f}
@@ -200,7 +195,6 @@ RSI: {setup['rsi']:.1f}
 ⏳ Hold: 2–3 days
 """)
 
-                # ===== STORE TRADE =====
                 trades.append({
                     "symbol": setup["symbol"],
                     "entry": setup["entry_high"],
@@ -209,7 +203,6 @@ RSI: {setup['rsi']:.1f}
                     "status": "open"
                 })
 
-        # ===== SEND STATS EVERY 5 TRADES =====
         if len(trades) > 0 and len(trades) % 5 == 0:
             report_stats()
 
