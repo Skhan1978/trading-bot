@@ -19,20 +19,23 @@ def send(msg):
         pass
 
 # ===== DATA =====
-def get_data(symbol):
+def get_data_full(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=5).json()
 
-        closes = res["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+        result = res["chart"]["result"][0]
+        closes = result["indicators"]["quote"][0]["close"]
+        volumes = result["indicators"]["quote"][0]["volume"]
 
-        # REMOVE None values
+        # CLEAN
         closes = [c for c in closes if c is not None]
+        volumes = [v for v in volumes if v is not None]
 
-        return closes
+        return closes, volumes
     except:
-        return None
+        return None, None
 
 # ===== RSI =====
 def rsi(closes, period=14):
@@ -56,7 +59,7 @@ def rsi(closes, period=14):
 
 # ===== MARKET =====
 def market_condition():
-    closes = get_data("SPY")
+    closes, _ = get_data_full("SPY")
 
     if not closes or len(closes) < 50:
         return "neutral"
@@ -71,10 +74,11 @@ def market_condition():
     else:
         return "weak"
 
-# ===== ANALYZE =====
+# ===== ANALYSIS =====
 def analyze(symbol):
-    closes = get_data(symbol)
-    if not closes or len(closes) < 50:
+    closes, volumes = get_data_full(symbol)
+
+    if not closes or not volumes or len(closes) < 50:
         return None
 
     price = closes[-1]
@@ -83,22 +87,35 @@ def analyze(symbol):
     ma50 = sum(closes[-50:]) / 50
     rsi_val = rsi(closes)
     momentum = (price - closes[-10]) / closes[-10]
-    recent_high = max(closes[-20:])
 
-    # FILTER
+    # ===== VOLUME =====
+    avg_vol = sum(volumes[-20:]) / 20
+    vol_ok = volumes[-1] > avg_vol
+
+    # ===== BREAKOUT FILTER =====
+    recent_high = max(closes[-20:])
+    too_high = price > recent_high * 0.995
+
+    # ===== ENTRY TIMING =====
+    if not (closes[-1] > closes[-2]):
+        return None
+
+    # ===== FILTER =====
     if rsi_val > 65 or rsi_val < 48:
         return None
 
+    # ===== SCORING =====
     score = 0
     if price > ma20: score += 1
     if ma20 > ma50: score += 1
     if 52 <= rsi_val <= 60: score += 2
     if momentum > 0: score += 1
-    if price < recent_high * 0.98: score += 1
+    if vol_ok: score += 1
+    if not too_high: score += 1
 
-    confidence = round(score / 6, 2)
+    confidence = round(score / 7, 2)
 
-    if confidence < 0.65:
+    if confidence < 0.6:
         return None
 
     entry_low = price * 0.995
@@ -117,13 +134,13 @@ def analyze(symbol):
         "confidence": confidence
     }
 
-# ===== TRACK TRADES =====
+# ===== TRACKING =====
 def check_trades():
     for trade in trades:
         if trade["status"] != "open":
             continue
 
-        closes = get_data(trade["symbol"])
+        closes, _ = get_data_full(trade["symbol"])
         if not closes:
             continue
 
@@ -139,7 +156,7 @@ def check_trades():
 
 # ===== MAIN LOOP =====
 def run():
-    send("🚀 BOT LIVE (DEPLOY VERSION)")
+    send("🚀 FINAL BOT LIVE")
 
     while True:
         try:
@@ -148,7 +165,7 @@ def run():
             market = market_condition()
 
             if market == "weak":
-                send("⚠️ Market weak — A+ only")
+                send("⚠️ Weak market → A+ only")
 
             setups = []
 
