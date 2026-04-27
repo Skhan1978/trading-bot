@@ -6,7 +6,7 @@ from sklearn.linear_model import LogisticRegression
 
 app = Flask(__name__)
 
-# ===== CONFIG (PUT YOUR REAL VALUES HERE) =====
+# ===== CONFIG =====
 TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 TELEGRAM_CHAT_ID = "7216850185"
 NEWS_API_KEY = "412cc787d78a4975804e17b245ca3c68"
@@ -27,9 +27,9 @@ def send(msg):
             "chat_id": TELEGRAM_CHAT_ID,
             "text": msg
         }, timeout=5)
-        print("Telegram:", r.text)
+        print("Telegram:", r.text, flush=True)
     except Exception as e:
-        print("Telegram ERROR:", e)
+        print("Telegram ERROR:", e, flush=True)
 
 # ===== DATA =====
 def get_data(symbol):
@@ -42,7 +42,7 @@ def get_data(symbol):
 
         return closes, volumes
     except Exception as e:
-        print(f"Data error for {symbol}:", e)
+        print(f"Data error for {symbol}:", e, flush=True)
         return None, None
 
 # ===== RSI =====
@@ -144,18 +144,18 @@ class Trade:
 
 # ===== ENGINE =====
 def run():
-    print("🚀 BOT RUNNING")
+    print("🚀 BOT RUNNING", flush=True)
     send("✅ Bot is LIVE and scanning...")
 
     while True:
-        print("Loop running...")
+        print("Loop running...", flush=True)
 
         best = None
         best_score = 0
         best_news = "No catalyst"
 
         for symbol in WATCHLIST:
-            print(f"Checking {symbol}")
+            print(f"Checking {symbol}", flush=True)
 
             closes, volumes = get_data(symbol)
             if not closes:
@@ -164,7 +164,7 @@ def run():
             features = extract_features(closes, volumes)
             confidence = predict_trade(features)
 
-            print(f"{symbol} confidence: {confidence:.2f}")
+            print(f"{symbol} confidence: {confidence:.2f}", flush=True)
 
             news_title, bullish = get_news(symbol)
             if bullish:
@@ -175,27 +175,25 @@ def run():
                 best = (symbol, closes[-1], confidence)
                 best_news = news_title
 
-        # ===== ENTRY (LOOSENED FOR TESTING) =====
+        # ===== ALWAYS SEND TOP PICK =====
         if best:
             symbol, price, conf = best
 
-            if symbol not in last_signal_time or time.time() - last_signal_time[symbol] > 600:
-
-                active_trades[symbol] = Trade(price)
-                last_signal_time[symbol] = time.time()
-
-                send(f"""🚀 AI TRADE
+            send(f"""🚀 TOP PICK
 {symbol} @ {price}
 
 Confidence: {conf:.2f}
 
 📰 {best_news}
-
-🎯 Target: 6–10%
-🛑 Stop: -3%
 """)
 
-        # ===== MANAGE =====
+            # Only track trades if decent confidence
+            if conf > 0.2:
+                if symbol not in last_signal_time or time.time() - last_signal_time[symbol] > 600:
+                    active_trades[symbol] = Trade(price)
+                    last_signal_time[symbol] = time.time()
+
+        # ===== MANAGE TRADES =====
         for symbol in list(active_trades.keys()):
             closes, _ = get_data(symbol)
             if not closes:
@@ -207,10 +205,6 @@ Confidence: {conf:.2f}
             if alert:
                 send(alert)
 
-        # ===== NO TRADE MESSAGE =====
-        if not active_trades:
-            send("⚠️ No trades found this cycle")
-
         time.sleep(CHECK_INTERVAL)
 
 # ===== DASHBOARD =====
@@ -219,7 +213,6 @@ def home():
     return "✅ Bot Running"
 
 # ===== START =====
-threading.Thread(target=run, daemon=True).start()
-
 if __name__ == "__main__":
+    threading.Thread(target=run).start()
     app.run(host="0.0.0.0", port=10000)
