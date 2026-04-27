@@ -13,6 +13,7 @@ COOLDOWN = 3600  # 1 hour
 trades = []
 pending_setups = {}
 last_sent = {}
+sent_signals = set()  # ✅ prevents duplicate alerts
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -117,7 +118,14 @@ def check_entries():
         # ENTRY CONDITION
         if setup["entry_low"] <= price <= setup["entry_high"]:
 
-            # 🚫 COOLDOWN BLOCK (RESTART SAFE)
+            # ✅ UNIQUE SIGNAL ID
+            signal_id = f"{symbol}_{round(price, 2)}"
+
+            # 🚫 BLOCK DUPLICATES FOREVER (until restart)
+            if signal_id in sent_signals:
+                continue
+
+            # 🚫 COOLDOWN BLOCK
             if symbol in last_sent and time.time() - last_sent[symbol] < COOLDOWN:
                 continue
 
@@ -129,9 +137,12 @@ Entry Zone Hit!
 Target: {setup['target']:.2f}
 Stop: {setup['stop']:.2f}
 RSI: {setup['rsi']:.1f}
+Confidence: {setup['confidence']}
 """)
 
+            # ✅ SAVE STATE
             last_sent[symbol] = time.time()
+            sent_signals.add(signal_id)
 
             trades.append({
                 "symbol": symbol,
@@ -158,7 +169,6 @@ def manage_trades():
 
         price = closes[-1]
 
-        # update high
         if price > trade["highest"]:
             trade["highest"] = price
 
@@ -193,7 +203,7 @@ def manage_trades():
 
 # ===== MAIN LOOP =====
 def run():
-    print("BOT STARTED")  # no telegram spam
+    print("BOT STARTED")
 
     while True:
         try:
@@ -203,9 +213,20 @@ def run():
                 setup = analyze(s)
 
                 if setup:
-                    # 🚫 BLOCK DUPLICATES BEFORE ADDING
+                    # 🚫 COOLDOWN BLOCK
                     if s in last_sent and time.time() - last_sent[s] < COOLDOWN:
                         continue
+
+                    # ✅ SMART SETUP FILTER
+                    existing = pending_setups.get(s)
+
+                    if existing:
+                        old_price = (existing["entry_low"] + existing["entry_high"]) / 2
+                        new_price = (setup["entry_low"] + setup["entry_high"]) / 2
+
+                        # Only update if meaningful change (>0.3%)
+                        if abs(new_price - old_price) / old_price < 0.003:
+                            continue
 
                     pending_setups[s] = setup
 
