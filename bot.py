@@ -50,6 +50,17 @@ def rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100/(1+rs))
 
+# ===== MARKET FILTER (SPY) =====
+def market_is_bullish():
+    closes = get_data("SPY")
+    if not closes or len(closes) < 50:
+        return False
+
+    ma20 = sum(closes[-20:]) / 20
+    ma50 = sum(closes[-50:]) / 50
+
+    return ma20 > ma50
+
 # ===== ANALYSIS =====
 def analyze(symbol):
     closes = get_data(symbol)
@@ -64,7 +75,7 @@ def analyze(symbol):
     momentum = (price - closes[-10]) / closes[-10]
     recent_high = max(closes[-20:])
 
-    # ===== SCORING SYSTEM =====
+    # ===== SCORING =====
     score = 0
 
     if price > ma20: score += 1
@@ -75,7 +86,6 @@ def analyze(symbol):
 
     confidence = round(score / 5, 2)
 
-    # Skip weak setups
     if confidence < 0.6:
         return None
 
@@ -108,15 +118,19 @@ def scan_market():
 
 # ===== ENGINE =====
 def run():
-    send("📈 SWING BOT (TOP 3 MODE) STARTED")
+    send("📈 SWING BOT (FINAL VERSION) STARTED")
 
     while True:
+
+        # ===== MARKET FILTER =====
+        if not market_is_bullish():
+            send("⛔ Market weak (SPY bearish) — no trades")
+            time.sleep(CHECK_INTERVAL)
+            continue
+
         setups = scan_market()
 
-        # Sort by confidence
         setups = sorted(setups, key=lambda x: x["confidence"], reverse=True)
-
-        # Take top 3 only
         top_setups = setups[:3]
 
         if not top_setups:
