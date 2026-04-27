@@ -12,8 +12,11 @@ CHECK_INTERVAL = 180
 trades = []
 last_sent = {}
 pending_setups = {}
+triggered_symbols = set()
 
 COOLDOWN = 3600  # 1 hour
+RESET_TIME = 3600 * 6  # reset every 6 hours
+last_reset = time.time()
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -24,7 +27,7 @@ def send(msg):
         pass
 
 # ===== DATA =====
-def get_data(symbol):
+def get_data_full(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -32,51 +35,62 @@ def get_data(symbol):
 
         result = res["chart"]["result"][0]
         closes = [c for c in result["indicators"]["quote"][0]["close"] if c is not None]
+        volumes = [v for v in result["indicators"]["quote"][0]["volume"] if v is not None]
 
-        return closes
+        return closes, volumes
     except:
-        return None
-
-# ===== RSI =====
-def rsi(closes, period=14):
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i-1]
-        gains.append(max(diff,0))
-        losses.append(abs(min(diff,0)))
-
-    if len(gains) < period:
-        return 50
-
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-
-    if avg_loss == 0:
-        return 100
-
-    rs = avg_gain / avg_loss
-    return 100 - (100/(1+rs))
+        return None, None
 
 # ===== ANALYZE =====
 def analyze(symbol):
-    closes = get_data(symbol)
+    closes, volumes = get_data_full(symbol)
 
-    if not closes or len(closes) < 50:
+    if not closes or not volumes or len(closes) < 50:
         return None
 
     price = closes[-1]
 
     ma20 = sum(closes[-20:]) / 20
     ma50 = sum(closes[-50:]) / 50
-    rsi_val = rsi(closes)
+
+    # RSI
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i-1]
+        gains.append(max(diff,0))
+        losses.append(abs(min(diff,0)))
+
+    avg_gain = sum(gains[-14:]) / 14
+    avg_loss = sum(losses[-14:]) / 14 if sum(losses[-14:]) != 0 else 1
+    rs = avg_gain / avg_loss
+    rsi_val = 100 - (100/(1+rs))
+
     momentum = (price - closes[-10]) / closes[-10]
 
-    # Balanced filter
-    if price > ma20 and ma20 > ma50 and 50 <= rsi_val <= 65 and momentum > 0:
-        confidence = 0.75
-    elif price > ma20 and momentum > 0:
-        confidence = 0.6
-    else:
+    avg_vol = sum(volumes[-20:]) / 20
+    vol_ok = volumes[-1] > avg_vol * 0.8
+
+    recent_high = max(closes[-20:])
+    not_chasing = price < recent_high * 0.98
+
+    # FILTERS
+    if rsi_val > 68 or rsi_val < 48:
+        return None
+
+    if not (closes[-1] > closes[-2]):
+        return None
+
+    score = 0
+    if price > ma20: score += 1
+    if ma20 > ma50: score += 1
+    if 52 <= rsi_val <= 60: score += 2
+    if momentum > 0: score += 1
+    if vol_ok: score += 1
+    if not_chasing: score += 1
+
+    confidence = round(score / 7, 2)
+
+    if confidence < 0.55:
         return None
 
     entry_low = price * 0.995
@@ -99,7 +113,7 @@ def analyze(symbol):
 def check_entry_triggers():
     for symbol, setup in list(pending_setups.items()):
 
-        closes = get_data(symbol)
+        closes, _ = get_data_full(symbol)
         if not closes:
             continue
 
@@ -107,9 +121,8 @@ def check_entry_triggers():
 
         if setup["entry_low"] <= price <= setup["entry_high"]:
 
-            if symbol in last_sent:
-                if time.time() - last_sent[symbol] < COOLDOWN:
-                    continue
+            if symbol in last_sent and time.time() - last_sent[symbol] < COOLDOWN:
+                continue
 
             tag = "🔥 A ENTRY" if setup["confidence"] >= 0.7 else "⚡ B ENTRY"
 
@@ -122,6 +135,7 @@ RSI: {setup['rsi']:.1f}
 """)
 
             last_sent[symbol] = time.time()
+            triggered_symbols.add(symbol)
 
             trades.append({
                 "symbol": symbol,
@@ -142,29 +156,25 @@ def check_trades():
         if trade["status"] != "open":
             continue
 
-        closes = get_data(trade["symbol"])
+        closes, _ = get_data_full(trade["symbol"])
         if not closes:
             continue
 
         price = closes[-1]
 
-        # update highest
         if price > trade["highest"]:
             trade["highest"] = price
 
         profit = ((price - trade["entry"]) / trade["entry"]) * 100
 
-        # 💰 PARTIAL PROFIT
         if profit >= 3 and not trade["partial_taken"]:
             trade["partial_taken"] = True
             send(f"💰 TAKE PARTIAL: {trade['symbol']} +{profit:.2f}%")
 
-        # 🔒 LOCK PROFIT
         if profit >= 3 and not trade["locked"]:
             trade["locked"] = True
             send(f"🔒 LOCK PROFIT: {trade['symbol']} +{profit:.2f}%")
 
-        # 📉 TRAILING EXIT
         drop = ((trade["highest"] - price) / trade["highest"]) * 100
 
         if trade["locked"] and drop >= 2:
@@ -172,31 +182,34 @@ def check_trades():
             send(f"⚠️ EXIT (Trailing): {trade['symbol']} secured {profit:.2f}%")
             continue
 
-        # ❌ STOP LOSS
         if price <= trade["stop"]:
             trade["status"] = "loss"
             send(f"❌ STOP HIT: {trade['symbol']}")
 
-        # 🎯 TARGET HIT
         elif price >= trade["target"]:
             trade["status"] = "win"
             send(f"🎯 TARGET HIT: {trade['symbol']}")
 
 # ===== MAIN LOOP =====
 def run():
-    send("🚀 BOT LIVE (FULL SYSTEM)")
+    global last_reset
+
+    send("🚀 BOT LIVE (SMART FINAL VERSION)")
 
     while True:
         try:
             check_trades()
 
-            # find setups
+            # reset duplicates every few hours
+            if time.time() - last_reset > RESET_TIME:
+                triggered_symbols.clear()
+                last_reset = time.time()
+
             for s in WATCHLIST:
                 setup = analyze(s)
-                if setup:
+                if setup and s not in triggered_symbols:
                     pending_setups[s] = setup
 
-            # trigger entries
             check_entry_triggers()
 
             time.sleep(CHECK_INTERVAL)
