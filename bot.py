@@ -8,7 +8,12 @@ CHAT_ID = "7216850185"
 WATCHLIST = ["AAPL","NVDA","MSFT","AMD","TSLA","META","GOOGL","AMZN"]
 CHECK_INTERVAL = 180
 
+# ===== STATE =====
 trades = []
+last_sent = {}
+pending_setups = {}
+
+COOLDOWN = 3600  # 1 hour
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -52,22 +57,7 @@ def rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100/(1+rs))
 
-# ===== MARKET =====
-def market_condition():
-    closes = get_data("SPY")
-
-    if not closes or len(closes) < 50:
-        return "neutral"
-
-    ma20 = sum(closes[-20:]) / 20
-    ma50 = sum(closes[-50:]) / 50
-
-    if ma20 > ma50:
-        return "strong"
-    else:
-        return "neutral"
-
-# ===== ANALYSIS =====
+# ===== ANALYZE =====
 def analyze(symbol):
     closes = get_data(symbol)
 
@@ -81,7 +71,6 @@ def analyze(symbol):
     rsi_val = rsi(closes)
     momentum = (price - closes[-10]) / closes[-10]
 
-    # SIMPLE FILTER (BALANCED)
     if price > ma20 and ma20 > ma50 and 50 <= rsi_val <= 65 and momentum > 0:
         confidence = 0.75
     elif price > ma20 and momentum > 0:
@@ -105,7 +94,47 @@ def analyze(symbol):
         "confidence": confidence
     }
 
-# ===== TRACKING =====
+# ===== ENTRY TRIGGER =====
+def check_entry_triggers():
+    for symbol, setup in list(pending_setups.items()):
+
+        closes = get_data(symbol)
+        if not closes:
+            continue
+
+        price = closes[-1]
+
+        if setup["entry_low"] <= price <= setup["entry_high"]:
+
+            if symbol in last_sent:
+                if time.time() - last_sent[symbol] < COOLDOWN:
+                    continue
+
+            tag = "🔥 A ENTRY" if setup["confidence"] >= 0.7 else "⚡ B ENTRY"
+
+            send(f"""🚨 {tag} {symbol} @ {price:.2f}
+
+Entry Zone Hit!
+Target: {setup['target']:.2f}
+Stop: {setup['stop']:.2f}
+RSI: {setup['rsi']:.1f}
+""")
+
+            last_sent[symbol] = time.time()
+
+            trades.append({
+                "symbol": symbol,
+                "entry": price,
+                "stop": setup["stop"],
+                "target": setup["target"],
+                "status": "open",
+                "highest": price,
+                "locked": False
+            })
+
+            del pending_setups[symbol]
+
+# ===== TRADE MANAGEMENT =====
 def check_trades():
     for trade in trades:
         if trade["status"] != "open":
@@ -117,57 +146,49 @@ def check_trades():
 
         price = closes[-1]
 
-        if price >= trade["target"]:
-            trade["status"] = "win"
-            send(f"✅ WIN: {trade['symbol']}")
+        # update highest
+        if price > trade["highest"]:
+            trade["highest"] = price
 
-        elif price <= trade["stop"]:
+        profit = ((price - trade["entry"]) / trade["entry"]) * 100
+
+        # 🔒 lock profit
+        if profit >= 3 and not trade["locked"]:
+            trade["locked"] = True
+            send(f"🔒 LOCK PROFIT: {trade['symbol']} +{profit:.2f}%")
+
+        # trailing exit
+        drop = ((trade["highest"] - price) / trade["highest"]) * 100
+
+        if trade["locked"] and drop >= 2:
+            trade["status"] = "win"
+            send(f"⚠️ EXIT (Trailing): {trade['symbol']} secured {profit:.2f}%")
+            continue
+
+        # stop loss
+        if price <= trade["stop"]:
             trade["status"] = "loss"
-            send(f"❌ LOSS: {trade['symbol']}")
+            send(f"❌ STOP HIT: {trade['symbol']}")
+
+        # target hit
+        elif price >= trade["target"]:
+            trade["status"] = "win"
+            send(f"🎯 TARGET HIT: {trade['symbol']}")
 
 # ===== MAIN LOOP =====
 def run():
-    send("🚀 BOT LIVE (STABLE VERSION)")
+    send("🚀 BOT LIVE (TRAILING VERSION)")
 
     while True:
         try:
             check_trades()
 
-            market = market_condition()
-
-            setups = []
-
             for s in WATCHLIST:
                 setup = analyze(s)
                 if setup:
-                    setups.append(setup)
+                    pending_setups[s] = setup
 
-            setups = sorted(setups, key=lambda x: x["confidence"], reverse=True)[:3]
-
-            if not setups:
-                send("⚠️ No setups right now")
-
-            for setup in setups:
-
-                if setup["confidence"] >= 0.7:
-                    tag = "🔥 A"
-                else:
-                    tag = "⚡ B"
-
-                send(f"""{tag} {setup['symbol']} @ {setup['price']:.2f}
-
-Entry: {setup['entry_low']:.2f}-{setup['entry_high']:.2f}
-Target: {setup['target']:.2f}
-Stop: {setup['stop']:.2f}
-RSI: {setup['rsi']:.1f}
-""")
-
-                trades.append({
-                    "symbol": setup["symbol"],
-                    "stop": setup["stop"],
-                    "target": setup["target"],
-                    "status": "open"
-                })
+            check_entry_triggers()
 
             time.sleep(CHECK_INTERVAL)
 
