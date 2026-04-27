@@ -1,5 +1,6 @@
 import requests
 import time
+import os
 
 # ===== CONFIG =====
 TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
@@ -13,7 +14,9 @@ COOLDOWN = 3600  # 1 hour
 trades = []
 pending_setups = {}
 last_sent = {}
-sent_signals = set()  # ✅ prevents duplicate alerts
+sent_signals = set()
+
+last_heartbeat = 0  # ✅ track heartbeat timing
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -28,14 +31,28 @@ def get_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=5).json()
+        res = requests.get(url, headers=headers, timeout=10)
 
-        result = res["chart"]["result"][0]
-        closes = [c for c in result["indicators"]["quote"][0]["close"] if c is not None]
-        volumes = [v for v in result["indicators"]["quote"][0]["volume"] if v is not None]
+        if res.status_code != 200:
+            return None, None
+
+        data = res.json()
+
+        if not data.get("chart") or not data["chart"]["result"]:
+            return None, None
+
+        result = data["chart"]["result"][0]
+
+        closes = result["indicators"]["quote"][0]["close"]
+        volumes = result["indicators"]["quote"][0]["volume"]
+
+        closes = [c for c in closes if c is not None]
+        volumes = [v for v in volumes if v is not None]
 
         return closes, volumes
-    except:
+
+    except Exception as e:
+        print(f"DATA ERROR {symbol}: {e}", flush=True)
         return None, None
 
 # ===== ANALYZE =====
@@ -50,7 +67,6 @@ def analyze(symbol):
     ma20 = sum(closes[-20:]) / 20
     ma50 = sum(closes[-50:]) / 50
 
-    # RSI
     gains, losses = [], []
     for i in range(1, len(closes)):
         diff = closes[i] - closes[i-1]
@@ -70,7 +86,6 @@ def analyze(symbol):
     recent_high = max(closes[-20:])
     not_chasing = price < recent_high * 0.98
 
-    # FILTERS
     if rsi_val > 68 or rsi_val < 48:
         return None
 
@@ -115,17 +130,13 @@ def check_entries():
 
         price = closes[-1]
 
-        # ENTRY CONDITION
         if setup["entry_low"] <= price <= setup["entry_high"]:
 
-            # ✅ UNIQUE SIGNAL ID
             signal_id = f"{symbol}_{round(price, 2)}"
 
-            # 🚫 BLOCK DUPLICATES FOREVER (until restart)
             if signal_id in sent_signals:
                 continue
 
-            # 🚫 COOLDOWN BLOCK
             if symbol in last_sent and time.time() - last_sent[symbol] < COOLDOWN:
                 continue
 
@@ -140,7 +151,6 @@ RSI: {setup['rsi']:.1f}
 Confidence: {setup['confidence']}
 """)
 
-            # ✅ SAVE STATE
             last_sent[symbol] = time.time()
             sent_signals.add(signal_id)
 
@@ -174,57 +184,59 @@ def manage_trades():
 
         profit = ((price - trade["entry"]) / trade["entry"]) * 100
 
-        # PARTIAL
         if profit >= 3 and not trade["partial"]:
             trade["partial"] = True
             send(f"💰 TAKE PARTIAL: {trade['symbol']} +{profit:.2f}%")
 
-        # LOCK
         if profit >= 3 and not trade["locked"]:
             trade["locked"] = True
             send(f"🔒 LOCK PROFIT: {trade['symbol']} +{profit:.2f}%")
 
-        # TRAILING EXIT
         drop = ((trade["highest"] - price) / trade["highest"]) * 100
         if trade["locked"] and drop >= 2:
             trade["status"] = "win"
             send(f"⚠️ EXIT (Trailing): {trade['symbol']} secured {profit:.2f}%")
             continue
 
-        # STOP
         if price <= trade["stop"]:
             trade["status"] = "loss"
             send(f"❌ STOP HIT: {trade['symbol']}")
 
-        # TARGET
         elif price >= trade["target"]:
             trade["status"] = "win"
             send(f"🎯 TARGET HIT: {trade['symbol']}")
 
 # ===== MAIN LOOP =====
 def run():
-    print("BOT STARTED")
+    global last_heartbeat
+
+    print("BOT STARTED", flush=True)
+    send("✅ Bot is live and running")
 
     while True:
         try:
+            now = time.time()
+
+            # ✅ HEARTBEAT EVERY 30 MIN
+            if now - last_heartbeat > 1800:
+                send("💓 Bot heartbeat alive")
+                last_heartbeat = now
+
             manage_trades()
 
             for s in WATCHLIST:
                 setup = analyze(s)
 
                 if setup:
-                    # 🚫 COOLDOWN BLOCK
                     if s in last_sent and time.time() - last_sent[s] < COOLDOWN:
                         continue
 
-                    # ✅ SMART SETUP FILTER
                     existing = pending_setups.get(s)
 
                     if existing:
                         old_price = (existing["entry_low"] + existing["entry_high"]) / 2
                         new_price = (setup["entry_low"] + setup["entry_high"]) / 2
 
-                        # Only update if meaningful change (>0.3%)
                         if abs(new_price - old_price) / old_price < 0.003:
                             continue
 
@@ -232,11 +244,12 @@ def run():
 
             check_entries()
 
+            print("Loop running...", flush=True)
             time.sleep(CHECK_INTERVAL)
 
         except Exception as e:
-            print("ERROR:", e)
-            time.sleep(10)
+            print("CRASH ERROR:", e, flush=True)
+            time.sleep(5)
 
 # ===== START =====
 if __name__ == "__main__":
