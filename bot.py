@@ -71,6 +71,7 @@ def analyze(symbol):
     rsi_val = rsi(closes)
     momentum = (price - closes[-10]) / closes[-10]
 
+    # Balanced filter
     if price > ma20 and ma20 > ma50 and 50 <= rsi_val <= 65 and momentum > 0:
         confidence = 0.75
     elif price > ma20 and momentum > 0:
@@ -129,7 +130,8 @@ RSI: {setup['rsi']:.1f}
                 "target": setup["target"],
                 "status": "open",
                 "highest": price,
-                "locked": False
+                "locked": False,
+                "partial_taken": False
             })
 
             del pending_setups[symbol]
@@ -152,12 +154,17 @@ def check_trades():
 
         profit = ((price - trade["entry"]) / trade["entry"]) * 100
 
-        # 🔒 lock profit
+        # 💰 PARTIAL PROFIT
+        if profit >= 3 and not trade["partial_taken"]:
+            trade["partial_taken"] = True
+            send(f"💰 TAKE PARTIAL: {trade['symbol']} +{profit:.2f}%")
+
+        # 🔒 LOCK PROFIT
         if profit >= 3 and not trade["locked"]:
             trade["locked"] = True
             send(f"🔒 LOCK PROFIT: {trade['symbol']} +{profit:.2f}%")
 
-        # trailing exit
+        # 📉 TRAILING EXIT
         drop = ((trade["highest"] - price) / trade["highest"]) * 100
 
         if trade["locked"] and drop >= 2:
@@ -165,29 +172,31 @@ def check_trades():
             send(f"⚠️ EXIT (Trailing): {trade['symbol']} secured {profit:.2f}%")
             continue
 
-        # stop loss
+        # ❌ STOP LOSS
         if price <= trade["stop"]:
             trade["status"] = "loss"
             send(f"❌ STOP HIT: {trade['symbol']}")
 
-        # target hit
+        # 🎯 TARGET HIT
         elif price >= trade["target"]:
             trade["status"] = "win"
             send(f"🎯 TARGET HIT: {trade['symbol']}")
 
 # ===== MAIN LOOP =====
 def run():
-    send("🚀 BOT LIVE (TRAILING VERSION)")
+    send("🚀 BOT LIVE (FULL SYSTEM)")
 
     while True:
         try:
             check_trades()
 
+            # find setups
             for s in WATCHLIST:
                 setup = analyze(s)
                 if setup:
                     pending_setups[s] = setup
 
+            # trigger entries
             check_entry_triggers()
 
             time.sleep(CHECK_INTERVAL)
