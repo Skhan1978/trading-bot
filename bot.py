@@ -2,13 +2,12 @@ from flask import Flask
 import requests
 import time
 import threading
-import os
 from sklearn.linear_model import LogisticRegression
 
 app = Flask(__name__)
 
-# ===== CONFIG =====
-TELEGRAM_TOKEN = "8268157455:AAE_ovLT4nZfi8Z8oFuo9fXAAlQQitU1rIk"
+# ===== CONFIG (PUT YOUR REAL VALUES HERE) =====
+TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 TELEGRAM_CHAT_ID = "7216850185"
 NEWS_API_KEY = "412cc787d78a4975804e17b245ca3c68"
 
@@ -24,9 +23,13 @@ last_signal_time = {}
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
-    except:
-        pass
+        r = requests.post(url, data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg
+        }, timeout=5)
+        print("Telegram:", r.text)
+    except Exception as e:
+        print("Telegram ERROR:", e)
 
 # ===== DATA =====
 def get_data(symbol):
@@ -38,7 +41,8 @@ def get_data(symbol):
         volumes = data["indicators"]["quote"][0]["volume"]
 
         return closes, volumes
-    except:
+    except Exception as e:
+        print(f"Data error for {symbol}:", e)
         return None, None
 
 # ===== RSI =====
@@ -82,7 +86,6 @@ X_train = [
 ]
 
 y_train = [1,1,1,0,1,0]
-
 model.fit(X_train, y_train)
 
 def predict_trade(features):
@@ -106,17 +109,6 @@ def get_news(symbol):
         return title, bullish
     except:
         return "No news", False
-
-# ===== MARKET FILTER =====
-def market_is_good():
-    closes, _ = get_data("SPY")
-    if not closes:
-        return False
-
-    short = sum(closes[-10:]) / 10
-    long = sum(closes[-30:]) / 30
-
-    return short > long
 
 # ===== TRADE =====
 class Trade:
@@ -146,22 +138,24 @@ class Trade:
             })
 
             del active_trades[symbol]
-
             return f"⚠️ EXIT NOW\n{symbol} secured {profit:.2f}%"
 
         return None
 
 # ===== ENGINE =====
 def run():
-    print("🚀 INSTITUTIONAL BOT RUNNING")
+    print("🚀 BOT RUNNING")
+    send("✅ Bot is LIVE and scanning...")
 
     while True:
+        print("Loop running...")
 
         best = None
         best_score = 0
         best_news = "No catalyst"
 
         for symbol in WATCHLIST:
+            print(f"Checking {symbol}")
 
             closes, volumes = get_data(symbol)
             if not closes:
@@ -169,6 +163,8 @@ def run():
 
             features = extract_features(closes, volumes)
             confidence = predict_trade(features)
+
+            print(f"{symbol} confidence: {confidence:.2f}")
 
             news_title, bullish = get_news(symbol)
             if bullish:
@@ -179,11 +175,11 @@ def run():
                 best = (symbol, closes[-1], confidence)
                 best_news = news_title
 
-        # ENTRY
-        if best and best_score > 0.3 and market_is_good() and len(active_trades) < MAX_TRADES:
+        # ===== ENTRY (LOOSENED FOR TESTING) =====
+        if best:
             symbol, price, conf = best
 
-            if symbol not in last_signal_time or time.time() - last_signal_time[symbol] > 3600:
+            if symbol not in last_signal_time or time.time() - last_signal_time[symbol] > 600:
 
                 active_trades[symbol] = Trade(price)
                 last_signal_time[symbol] = time.time()
@@ -199,7 +195,7 @@ Confidence: {conf:.2f}
 🛑 Stop: -3%
 """)
 
-        # MANAGE
+        # ===== MANAGE =====
         for symbol in list(active_trades.keys()):
             closes, _ = get_data(symbol)
             if not closes:
@@ -211,6 +207,10 @@ Confidence: {conf:.2f}
             if alert:
                 send(alert)
 
+        # ===== NO TRADE MESSAGE =====
+        if not active_trades:
+            send("⚠️ No trades found this cycle")
+
         time.sleep(CHECK_INTERVAL)
 
 # ===== DASHBOARD =====
@@ -218,26 +218,8 @@ Confidence: {conf:.2f}
 def home():
     return "✅ Bot Running"
 
-@app.route("/dashboard")
-def dashboard():
-    html = "<h1>📊 Active Trades</h1>"
-    for s, t in active_trades.items():
-        html += f"<p>{s} | Entry: {t.entry:.2f} | High: {t.highest:.2f}</p>"
-    return html
-
-@app.route("/performance")
-def performance():
-    if not trade_log:
-        return "No trades yet"
-
-    wins = [t for t in trade_log if t["profit"] > 0]
-    win_rate = (len(wins)/len(trade_log))*100
-
-    return f"""
-    <h1>Performance</h1>
-    <p>Trades: {len(trade_log)}</p>
-    <p>Win Rate: {win_rate:.1f}%</p>
-    """
-
 # ===== START =====
 threading.Thread(target=run, daemon=True).start()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
