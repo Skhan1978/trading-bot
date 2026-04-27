@@ -15,8 +15,7 @@ trades = []
 pending_setups = {}
 last_sent = {}
 sent_signals = set()
-
-last_heartbeat = 0  # ✅ track heartbeat timing
+last_heartbeat = 0
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -55,21 +54,23 @@ def get_data(symbol):
         print(f"DATA ERROR {symbol}: {e}", flush=True)
         return None, None
 
-# ===== ANALYZE =====
+# ===== ANALYZE (V2 LOGIC) =====
 def analyze(symbol):
-    closes, volumes = get_data(symbol)
+    closes_5m, volumes = get_data(symbol)
 
-    if not closes or not volumes or len(closes) < 50:
+    if not closes_5m or len(closes_5m) < 50:
         return None
 
-    price = closes[-1]
+    price = closes_5m[-1]
 
-    ma20 = sum(closes[-20:]) / 20
-    ma50 = sum(closes[-50:]) / 50
+    # ===== 5M TREND =====
+    ma20 = sum(closes_5m[-20:]) / 20
+    ma50 = sum(closes_5m[-50:]) / 50
 
+    # ===== RSI =====
     gains, losses = [], []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i-1]
+    for i in range(1, len(closes_5m)):
+        diff = closes_5m[i] - closes_5m[i-1]
         gains.append(max(diff,0))
         losses.append(abs(min(diff,0)))
 
@@ -78,37 +79,61 @@ def analyze(symbol):
     rs = avg_gain / avg_loss
     rsi_val = 100 - (100/(1+rs))
 
-    momentum = (price - closes[-10]) / closes[-10]
+    # ===== MOMENTUM =====
+    momentum = (price - closes_5m[-10]) / closes_5m[-10]
 
+    # ===== VOLUME =====
     avg_vol = sum(volumes[-20:]) / 20
-    vol_ok = volumes[-1] > avg_vol * 0.8
+    vol_ok = volumes[-1] > avg_vol * 1.0
 
-    recent_high = max(closes[-20:])
-    not_chasing = price < recent_high * 0.98
+    # ===== BREAKOUT =====
+    recent_high = max(closes_5m[-20:])
+    breakout = price > recent_high * 1.002
 
-    if rsi_val > 68 or rsi_val < 48:
+    # ===== 15M CONFIRMATION =====
+    closes_15m = closes_5m[::3]
+    if len(closes_15m) < 20:
         return None
 
-    if not (closes[-1] > closes[-2]):
+    ma15 = sum(closes_15m[-20:]) / 20
+    trend_15m = closes_15m[-1] > ma15
+
+    # ===== FILTERS =====
+    if not breakout:
         return None
 
+    if not trend_15m:
+        return None
+
+    if rsi_val < 52 or rsi_val > 65:
+        return None
+
+    if momentum < 0.01:
+        return None
+
+    if not vol_ok:
+        return None
+
+    if ma20 < ma50:
+        return None
+
+    # ===== SCORE =====
     score = 0
-    if price > ma20: score += 1
-    if ma20 > ma50: score += 1
-    if 52 <= rsi_val <= 60: score += 2
-    if momentum > 0: score += 1
+    if breakout: score += 2
+    if trend_15m: score += 2
+    if momentum > 0.015: score += 1
     if vol_ok: score += 1
-    if not_chasing: score += 1
+    if 55 <= rsi_val <= 62: score += 1
 
     confidence = round(score / 7, 2)
 
-    if confidence < 0.55:
+    if confidence < 0.6:
         return None
 
-    entry_low = price * 0.995
-    entry_high = price * 1.005
-    stop = entry_low * 0.97
-    target = entry_high * 1.05
+    entry_low = price
+    entry_high = price * 1.003
+    stop = price * 0.97
+    target = price * 1.06
 
     return {
         "symbol": symbol,
@@ -120,7 +145,7 @@ def analyze(symbol):
         "confidence": confidence
     }
 
-# ===== ENTRY TRIGGER =====
+# ===== ENTRY =====
 def check_entries():
     for symbol, setup in list(pending_setups.items()):
 
@@ -140,11 +165,11 @@ def check_entries():
             if symbol in last_sent and time.time() - last_sent[symbol] < COOLDOWN:
                 continue
 
-            tag = "🔥 A ENTRY" if setup["confidence"] >= 0.7 else "⚡ B ENTRY"
+            tag = "🔥 A+ BREAKOUT" if setup["confidence"] >= 0.7 else "⚡ BREAKOUT"
 
-            send(f"""🚨 {tag} {symbol} @ {price:.2f}
+            send(f"""🚀 {tag} {symbol} @ {price:.2f}
 
-Entry Zone Hit!
+Breakout Confirmed!
 Target: {setup['target']:.2f}
 Stop: {setup['stop']:.2f}
 RSI: {setup['rsi']:.1f}
@@ -211,15 +236,15 @@ def run():
     global last_heartbeat
 
     print("BOT STARTED", flush=True)
-    send("✅ Bot is live and running")
+    send("✅ V2 Bot is live (Breakout Mode)")
 
     while True:
         try:
             now = time.time()
 
-            # ✅ HEARTBEAT EVERY 30 MIN
+            # HEARTBEAT
             if now - last_heartbeat > 1800:
-                send("💓 Bot heartbeat alive")
+                send("💓 Bot alive (V2 running)")
                 last_heartbeat = now
 
             manage_trades()
@@ -248,7 +273,7 @@ def run():
             time.sleep(CHECK_INTERVAL)
 
         except Exception as e:
-            print("CRASH ERROR:", e, flush=True)
+            print("CRASH:", e, flush=True)
             time.sleep(5)
 
 # ===== START =====
