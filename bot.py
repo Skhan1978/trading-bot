@@ -8,7 +8,7 @@ from sklearn.linear_model import LogisticRegression
 app = Flask(__name__)
 
 # ===== CONFIG =====
-TELEGRAM_TOKEN = "8268157455:AAF807pO5yASxEZ-RKSowuIA4LlGRWkE1Vs"
+TELEGRAM_TOKEN = "8268157455:AAE_ovLT4nZfi8Z8oFuo9fXAAlQQitU1rIk"
 TELEGRAM_CHAT_ID = "7216850185"
 NEWS_API_KEY = "412cc787d78a4975804e17b245ca3c68"
 
