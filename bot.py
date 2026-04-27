@@ -8,9 +8,9 @@ from sklearn.linear_model import LogisticRegression
 app = Flask(__name__)
 
 # ===== CONFIG =====
-TELEGRAM_TOKEN = os.environ.get("8268157455:AAF807pO5yASxEZ-RKSowuIA4LlGRWkE1Vs")
-TELEGRAM_CHAT_ID = os.environ.get("7216850185")
-NEWS_API_KEY = os.environ.get("412cc787d78a4975804e17b245ca3c68")
+TELEGRAM_TOKEN = "8268157455:AAF807pO5yASxEZ-RKSowuIA4LlGRWkE1Vs"
+TELEGRAM_CHAT_ID = "7216850185"
+NEWS_API_KEY = "412cc787d78a4975804e17b245ca3c68"
 
 WATCHLIST = ["AMD","NVDA","PLTR","TSLA","ENPH","AAPL","MSFT"]
 CHECK_INTERVAL = 180
