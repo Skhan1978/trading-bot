@@ -50,7 +50,7 @@ def rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100/(1+rs))
 
-# ===== MARKET FILTER (SPY) =====
+# ===== MARKET FILTER =====
 def market_is_bullish():
     closes = get_data("SPY")
     if not closes or len(closes) < 50:
@@ -75,18 +75,22 @@ def analyze(symbol):
     momentum = (price - closes[-10]) / closes[-10]
     recent_high = max(closes[-20:])
 
+    # ===== HARD FILTER (REMOVE BAD TRADES) =====
+    if rsi_val > 65 or rsi_val < 48:
+        return None
+
     # ===== SCORING =====
     score = 0
 
     if price > ma20: score += 1
     if ma20 > ma50: score += 1
-    if 50 < rsi_val < 65: score += 1
+    if 52 <= rsi_val <= 60: score += 2   # weighted higher
     if momentum > 0: score += 1
     if price < recent_high * 0.98: score += 1
 
-    confidence = round(score / 5, 2)
+    confidence = round(score / 6, 2)
 
-    if confidence < 0.6:
+    if confidence < 0.65:
         return None
 
     entry_low = price * 0.995
@@ -118,11 +122,10 @@ def scan_market():
 
 # ===== ENGINE =====
 def run():
-    send("📈 SWING BOT (FINAL VERSION) STARTED")
+    send("📈 SWING BOT (HIGH-QUALITY MODE) STARTED")
 
     while True:
 
-        # ===== MARKET FILTER =====
         if not market_is_bullish():
             send("⛔ Market weak (SPY bearish) — no trades")
             time.sleep(CHECK_INTERVAL)
@@ -134,7 +137,7 @@ def run():
         top_setups = setups[:3]
 
         if not top_setups:
-            send("⚠️ No quality setups right now")
+            send("⚠️ No high-quality setups right now")
         else:
             for setup in top_setups:
 
