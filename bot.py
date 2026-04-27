@@ -18,7 +18,7 @@ def send(msg):
     except:
         pass
 
-# ===== DATA (SAFE) =====
+# ===== DATA =====
 def get_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
@@ -54,24 +54,24 @@ def rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100/(1+rs))
 
-# ===== MARKET =====
+# ===== MARKET (RELAXED & SMART) =====
 def market_condition():
     closes = get_data("SPY")
 
     if not closes or len(closes) < 50:
-        return "weak"
+        return "neutral"
 
     ma20 = sum(closes[-20:]) / 20
     ma50 = sum(closes[-50:]) / 50
 
-    if ma20 > ma50 * 1.01:
+    if ma20 > ma50:
         return "strong"
-    elif ma20 > ma50:
+    elif ma20 > ma50 * 0.995:
         return "neutral"
     else:
         return "weak"
 
-# ===== ANALYZE =====
+# ===== ANALYSIS =====
 def analyze(symbol):
     closes = get_data(symbol)
     if not closes or len(closes) < 50:
@@ -85,6 +85,7 @@ def analyze(symbol):
     momentum = (price - closes[-10]) / closes[-10]
     recent_high = max(closes[-20:])
 
+    # FILTER BAD CONDITIONS
     if rsi_val > 65 or rsi_val < 48:
         return None
 
@@ -138,7 +139,7 @@ def check_trades():
 
 # ===== MAIN LOOP =====
 def run():
-    send("🚀 SWING BOT LIVE")
+    send("🚀 SWING BOT LIVE (FINAL VERSION)")
 
     while True:
         try:
@@ -147,9 +148,7 @@ def run():
             market = market_condition()
 
             if market == "weak":
-                send("⛔ Market weak — no trades")
-                time.sleep(CHECK_INTERVAL)
-                continue
+                send("⚠️ Market weak — only A+ setups")
 
             setups = []
 
@@ -160,14 +159,19 @@ def run():
 
             setups = sorted(setups, key=lambda x: x["confidence"], reverse=True)[:3]
 
+            if not setups:
+                send("⚠️ No setups found")
+
             for setup in setups:
 
                 if setup["confidence"] >= 0.8:
                     tag = "🔥 A+ SETUP"
+
                 elif setup["confidence"] >= 0.6:
-                    if market == "neutral":
+                    if market == "weak":
                         continue
                     tag = "⚡ B SETUP"
+
                 else:
                     continue
 
