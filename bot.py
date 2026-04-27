@@ -12,6 +12,9 @@ TELEGRAM_CHAT_ID = "7216850185"
 WATCHLIST = ["AAPL","NVDA","MSFT","AMD","TSLA","META","GOOGL","AMZN"]
 CHECK_INTERVAL = 180
 
+# ===== TRADE STORAGE =====
+trades = []
+
 # ===== TELEGRAM =====
 def send(msg):
     try:
@@ -75,16 +78,15 @@ def analyze(symbol):
     momentum = (price - closes[-10]) / closes[-10]
     recent_high = max(closes[-20:])
 
-    # ===== HARD FILTER (REMOVE BAD TRADES) =====
+    # ===== FILTER BAD TRADES =====
     if rsi_val > 65 or rsi_val < 48:
         return None
 
     # ===== SCORING =====
     score = 0
-
     if price > ma20: score += 1
     if ma20 > ma50: score += 1
-    if 52 <= rsi_val <= 60: score += 2   # weighted higher
+    if 52 <= rsi_val <= 60: score += 2
     if momentum > 0: score += 1
     if price < recent_high * 0.98: score += 1
 
@@ -112,19 +114,59 @@ def analyze(symbol):
 # ===== SCAN =====
 def scan_market():
     setups = []
-
     for symbol in WATCHLIST:
         setup = analyze(symbol)
         if setup:
             setups.append(setup)
-
     return setups
+
+# ===== TRADE CHECK =====
+def check_trades():
+    global trades
+
+    for trade in trades:
+        if trade["status"] != "open":
+            continue
+
+        closes = get_data(trade["symbol"])
+        if not closes:
+            continue
+
+        price = closes[-1]
+
+        if price >= trade["target"]:
+            trade["status"] = "win"
+            send(f"✅ WIN: {trade['symbol']} hit target")
+
+        elif price <= trade["stop"]:
+            trade["status"] = "loss"
+            send(f"❌ LOSS: {trade['symbol']} hit stop")
+
+# ===== STATS =====
+def report_stats():
+    total = len(trades)
+    wins = len([t for t in trades if t["status"] == "win"])
+    losses = len([t for t in trades if t["status"] == "loss"])
+
+    if total == 0:
+        return
+
+    win_rate = (wins / total) * 100
+
+    send(f"""📊 PERFORMANCE
+Trades: {total}
+Wins: {wins}
+Losses: {losses}
+Win Rate: {win_rate:.1f}%
+""")
 
 # ===== ENGINE =====
 def run():
-    send("📈 SWING BOT (HIGH-QUALITY MODE) STARTED")
+    send("📈 SWING BOT (FULL SYSTEM) STARTED")
 
     while True:
+
+        check_trades()
 
         if not market_is_bullish():
             send("⛔ Market weak (SPY bearish) — no trades")
@@ -132,7 +174,6 @@ def run():
             continue
 
         setups = scan_market()
-
         setups = sorted(setups, key=lambda x: x["confidence"], reverse=True)
         top_setups = setups[:3]
 
@@ -158,6 +199,19 @@ Confidence: {setup['confidence']}
 RSI: {setup['rsi']:.1f}
 ⏳ Hold: 2–3 days
 """)
+
+                # ===== STORE TRADE =====
+                trades.append({
+                    "symbol": setup["symbol"],
+                    "entry": setup["entry_high"],
+                    "stop": setup["stop"],
+                    "target": setup["target"],
+                    "status": "open"
+                })
+
+        # ===== SEND STATS EVERY 5 TRADES =====
+        if len(trades) > 0 and len(trades) % 5 == 0:
+            report_stats()
 
         time.sleep(CHECK_INTERVAL)
 
