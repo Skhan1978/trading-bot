@@ -27,7 +27,7 @@ def get_data(symbol):
 
         closes = res["chart"]["result"][0]["indicators"]["quote"][0]["close"]
 
-        # CLEAN DATA
+        # REMOVE None values
         closes = [c for c in closes if c is not None]
 
         return closes
@@ -54,7 +54,7 @@ def rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100/(1+rs))
 
-# ===== MARKET (RELAXED & SMART) =====
+# ===== MARKET =====
 def market_condition():
     closes = get_data("SPY")
 
@@ -71,7 +71,7 @@ def market_condition():
     else:
         return "weak"
 
-# ===== ANALYSIS =====
+# ===== ANALYZE =====
 def analyze(symbol):
     closes = get_data(symbol)
     if not closes or len(closes) < 50:
@@ -85,7 +85,7 @@ def analyze(symbol):
     momentum = (price - closes[-10]) / closes[-10]
     recent_high = max(closes[-20:])
 
-    # FILTER BAD CONDITIONS
+    # FILTER
     if rsi_val > 65 or rsi_val < 48:
         return None
 
@@ -117,7 +117,7 @@ def analyze(symbol):
         "confidence": confidence
     }
 
-# ===== TRACKING =====
+# ===== TRACK TRADES =====
 def check_trades():
     for trade in trades:
         if trade["status"] != "open":
@@ -131,15 +131,15 @@ def check_trades():
 
         if price >= trade["target"]:
             trade["status"] = "win"
-            send(f"✅ WIN: {trade['symbol']} hit target")
+            send(f"✅ WIN: {trade['symbol']}")
 
         elif price <= trade["stop"]:
             trade["status"] = "loss"
-            send(f"❌ LOSS: {trade['symbol']} hit stop")
+            send(f"❌ LOSS: {trade['symbol']}")
 
 # ===== MAIN LOOP =====
 def run():
-    send("🚀 SWING BOT LIVE (FINAL VERSION)")
+    send("🚀 BOT LIVE (DEPLOY VERSION)")
 
     while True:
         try:
@@ -148,7 +148,7 @@ def run():
             market = market_condition()
 
             if market == "weak":
-                send("⚠️ Market weak — only A+ setups")
+                send("⚠️ Market weak — A+ only")
 
             setups = []
 
@@ -160,32 +160,27 @@ def run():
             setups = sorted(setups, key=lambda x: x["confidence"], reverse=True)[:3]
 
             if not setups:
-                send("⚠️ No setups found")
+                send("⚠️ No setups")
 
             for setup in setups:
 
                 if setup["confidence"] >= 0.8:
-                    tag = "🔥 A+ SETUP"
+                    tag = "🔥 A+"
 
                 elif setup["confidence"] >= 0.6:
                     if market == "weak":
                         continue
-                    tag = "⚡ B SETUP"
+                    tag = "⚡ B"
 
                 else:
                     continue
 
-                send(f"""{tag}
-{setup['symbol']} @ {setup['price']:.2f}
+                send(f"""{tag} {setup['symbol']} @ {setup['price']:.2f}
 
-Confidence: {setup['confidence']}
-
-✅ Entry: {setup['entry_low']:.2f} – {setup['entry_high']:.2f}
-🎯 Target: {setup['target']:.2f}
-🛑 Stop: {setup['stop']:.2f}
-
+Entry: {setup['entry_low']:.2f}-{setup['entry_high']:.2f}
+Target: {setup['target']:.2f}
+Stop: {setup['stop']:.2f}
 RSI: {setup['rsi']:.1f}
-⏳ Hold: 2–3 days
 """)
 
                 trades.append({
