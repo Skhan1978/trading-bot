@@ -7,16 +7,12 @@ CHAT_ID = "7216850185"
 
 WATCHLIST = ["AAPL","NVDA","MSFT","AMD","TSLA","META","GOOGL","AMZN"]
 CHECK_INTERVAL = 180
+COOLDOWN = 3600  # 1 hour
 
 # ===== STATE =====
 trades = []
-last_sent = {}
 pending_setups = {}
-triggered_symbols = set()
-
-COOLDOWN = 3600  # 1 hour
-RESET_TIME = 3600 * 6  # reset every 6 hours
-last_reset = time.time()
+last_sent = {}
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -27,7 +23,7 @@ def send(msg):
         pass
 
 # ===== DATA =====
-def get_data_full(symbol):
+def get_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=5m"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -43,7 +39,7 @@ def get_data_full(symbol):
 
 # ===== ANALYZE =====
 def analyze(symbol):
-    closes, volumes = get_data_full(symbol)
+    closes, volumes = get_data(symbol)
 
     if not closes or not volumes or len(closes) < 50:
         return None
@@ -100,7 +96,6 @@ def analyze(symbol):
 
     return {
         "symbol": symbol,
-        "price": price,
         "entry_low": entry_low,
         "entry_high": entry_high,
         "stop": stop,
@@ -110,17 +105,19 @@ def analyze(symbol):
     }
 
 # ===== ENTRY TRIGGER =====
-def check_entry_triggers():
+def check_entries():
     for symbol, setup in list(pending_setups.items()):
 
-        closes, _ = get_data_full(symbol)
+        closes, _ = get_data(symbol)
         if not closes:
             continue
 
         price = closes[-1]
 
+        # ENTRY CONDITION
         if setup["entry_low"] <= price <= setup["entry_high"]:
 
+            # 🚫 COOLDOWN BLOCK (RESTART SAFE)
             if symbol in last_sent and time.time() - last_sent[symbol] < COOLDOWN:
                 continue
 
@@ -135,82 +132,84 @@ RSI: {setup['rsi']:.1f}
 """)
 
             last_sent[symbol] = time.time()
-            triggered_symbols.add(symbol)
 
             trades.append({
                 "symbol": symbol,
                 "entry": price,
                 "stop": setup["stop"],
                 "target": setup["target"],
-                "status": "open",
                 "highest": price,
                 "locked": False,
-                "partial_taken": False
+                "partial": False,
+                "status": "open"
             })
 
             del pending_setups[symbol]
 
 # ===== TRADE MANAGEMENT =====
-def check_trades():
+def manage_trades():
     for trade in trades:
         if trade["status"] != "open":
             continue
 
-        closes, _ = get_data_full(trade["symbol"])
+        closes, _ = get_data(trade["symbol"])
         if not closes:
             continue
 
         price = closes[-1]
 
+        # update high
         if price > trade["highest"]:
             trade["highest"] = price
 
         profit = ((price - trade["entry"]) / trade["entry"]) * 100
 
-        if profit >= 3 and not trade["partial_taken"]:
-            trade["partial_taken"] = True
+        # PARTIAL
+        if profit >= 3 and not trade["partial"]:
+            trade["partial"] = True
             send(f"💰 TAKE PARTIAL: {trade['symbol']} +{profit:.2f}%")
 
+        # LOCK
         if profit >= 3 and not trade["locked"]:
             trade["locked"] = True
             send(f"🔒 LOCK PROFIT: {trade['symbol']} +{profit:.2f}%")
 
+        # TRAILING EXIT
         drop = ((trade["highest"] - price) / trade["highest"]) * 100
-
         if trade["locked"] and drop >= 2:
             trade["status"] = "win"
             send(f"⚠️ EXIT (Trailing): {trade['symbol']} secured {profit:.2f}%")
             continue
 
+        # STOP
         if price <= trade["stop"]:
             trade["status"] = "loss"
             send(f"❌ STOP HIT: {trade['symbol']}")
 
+        # TARGET
         elif price >= trade["target"]:
             trade["status"] = "win"
             send(f"🎯 TARGET HIT: {trade['symbol']}")
 
 # ===== MAIN LOOP =====
 def run():
-    global last_reset
-
-    send("🚀 BOT LIVE (SMART FINAL VERSION)")
+    print("BOT STARTED")  # no telegram spam
 
     while True:
         try:
-            check_trades()
-
-            # reset duplicates every few hours
-            if time.time() - last_reset > RESET_TIME:
-                triggered_symbols.clear()
-                last_reset = time.time()
+            manage_trades()
 
             for s in WATCHLIST:
                 setup = analyze(s)
-                if setup and s not in triggered_symbols:
+
+                if setup:
+                    # 🚫 BLOCK DUPLICATES BEFORE ADDING
+                    if s in last_sent and time.time() - last_sent[s] < COOLDOWN:
+                        continue
+
                     pending_setups[s] = setup
 
-            check_entry_triggers()
+            check_entries()
 
             time.sleep(CHECK_INTERVAL)
 
