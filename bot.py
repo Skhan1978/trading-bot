@@ -8,8 +8,8 @@ TELEGRAM_TOKEN = os.getenv("8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4")
 CHAT_ID = os.getenv("7216850185")
 FMP_API_KEY = os.getenv("412cc787d78a4975804e17b245ca3c68")
 
-CHECK_INTERVAL = 3600
-TOP_N = 10
+CHECK_INTERVAL = 3600  # every hour
+TOP_N = 3
 
 sent_today = set()
 last_reset_day = None
@@ -22,7 +22,7 @@ def send(msg):
     except:
         pass
 
-# ===== RESET =====
+# ===== RESET DAILY =====
 def reset_daily():
     global sent_today, last_reset_day
     today = datetime.now(UTC).date()
@@ -31,12 +31,12 @@ def reset_daily():
         sent_today.clear()
         last_reset_day = today
 
-# ===== GET STOCKS =====
-def get_midcaps():
+# ===== GET MIDCAP STOCKS =====
+def get_stocks():
     url = f"https://financialmodelingprep.com/api/v3/stock-screener?marketCapMoreThan=2000000000&marketCapLowerThan=20000000000&volumeMoreThan=500000&limit=300&apikey={FMP_API_KEY}"
     return [s["symbol"] for s in requests.get(url).json()]
 
-# ===== DATA =====
+# ===== GET PRICE DATA =====
 def get_data(symbol):
     url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?apikey={FMP_API_KEY}"
     data = requests.get(url).json()
@@ -49,21 +49,19 @@ def get_data(symbol):
 
 # ===== FUNDAMENTALS =====
 def fundamentals(symbol):
-    url = f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={FMP_API_KEY}"
-    d = requests.get(url).json()[0]
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={FMP_API_KEY}"
+        d = requests.get(url).json()[0]
 
-    return {
-        "debt": d.get("debtToEquity", 0),
-        "profit": d.get("profitMargins", 0),
-        "sector": d.get("sector", "")
-    }
+        return {
+            "debt": d.get("debtToEquity", 0),
+            "profit": d.get("profitMargins", 0),
+            "sector": d.get("sector", "")
+        }
+    except:
+        return None
 
-# ===== NEWS =====
-def has_news(symbol):
-    url = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={symbol}&limit=2&apikey={FMP_API_KEY}"
-    return len(requests.get(url).json()) > 0
-
-# ===== HALAL =====
+# ===== HALAL FILTER =====
 def halal(f):
     if not f: return False
     if "Financial" in f["sector"]: return False
@@ -71,7 +69,7 @@ def halal(f):
     if f["profit"] <= 0: return False
     return True
 
-# ===== AI SCORE =====
+# ===== AI SCORING =====
 def score_stock(symbol):
     try:
         closes, volumes = get_data(symbol)
@@ -87,95 +85,80 @@ def score_stock(symbol):
 
         score = 0
 
-        # Trend
+        # STRONG TREND
         if price > ma20 > ma50:
             score += 25
 
-        # Pullback
+        # PULLBACK ENTRY
         recent_high = max(closes[-20:])
         pullback = (recent_high - price) / recent_high
         if 0.03 < pullback < 0.08:
             score += 20
 
-        # Volume
+        # VOLUME
         avg_vol = sum(volumes[-20:]) / 20
         if volumes[-1] > avg_vol * 1.3:
             score += 15
 
-        # Fundamentals
+        # FUNDAMENTALS
         if f["profit"] > 0.1:
             score += 15
 
-        # News catalyst
-        if has_news(symbol):
-            score += 10
-
-        # Momentum
+        # MOMENTUM
         momentum = (price - closes[-10]) / closes[-10]
         if momentum > 0.03:
             score += 15
 
+        # EXTRA BOOST (HIGH RR)
+        rr = (price * 1.18 - price) / (price - price * 0.94)
+        if rr > 2:
+            score += 10
+
+        confidence = min(score, 100)
+
         return {
             "symbol": symbol,
-            "score": score,
+            "score": confidence,
             "price": price,
-            "target": price * 1.12,
-            "stop": price * 0.95
+            "target": price * 1.18,   # HIGH PROFIT
+            "stop": price * 0.94
         }
 
     except:
         return None
 
-# ===== BACKTEST =====
-def quick_backtest(closes):
-    wins = 0
-    trades = 0
-
-    for i in range(20, len(closes)-5):
-        entry = closes[i]
-        future = closes[i+1:i+6]
-
-        if max(future) > entry * 1.05:
-            wins += 1
-        trades += 1
-
-    if trades == 0:
-        return 0
-
-    return round((wins/trades)*100, 1)
-
 # ===== MAIN =====
 def run():
-    send("🧠 V7 AI HALAL SCANNER LIVE")
+    send("🚀 V8 TOP 3 HALAL SWING BOT LIVE")
 
     while True:
         try:
             reset_daily()
 
-            stocks = get_midcaps()
+            stocks = get_stocks()
             ranked = []
 
             for s in stocks:
                 data = score_stock(s)
                 if data:
-                    closes, _ = get_data(s)
-                    data["winrate"] = quick_backtest(closes)
                     ranked.append(data)
 
-            # SORT BY SCORE
+            # SORT BEST FIRST
             ranked = sorted(ranked, key=lambda x: x["score"], reverse=True)
 
             top = ranked[:TOP_N]
 
-            msg = "📊 TOP 10 HALAL SWING STOCKS (AI RANKED)\n\n"
+            msg = "🏆 TOP 3 HIGH PROBABILITY SWING STOCKS\n\n"
 
             for i, s in enumerate(top, 1):
-                msg += f"""{i}. {s['symbol']} | Score: {s['score']}/100
-Price: {s['price']:.2f}
+                msg += f"""{i}. {s['symbol']} | Confidence: {s['score']}%
+
+Entry: {s['price']:.2f}
 Target: {s['target']:.2f}
 Stop: {s['stop']:.2f}
-Backtest Winrate: {s['winrate']}%
 
+Risk/Reward: HIGH
+-----------------------
 """
 
             send(msg)
