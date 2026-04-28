@@ -8,11 +8,11 @@ TELEGRAM_TOKEN = os.getenv("8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4")
 CHAT_ID = os.getenv("7216850185")
 FMP_API_KEY = os.getenv("412cc787d78a4975804e17b245ca3c68")
 
-CHECK_INTERVAL = 3600  # every hour
-TOP_N = 3
+CHECK_INTERVAL = 300  # 5 min
 
-sent_today = set()
-last_reset_day = None
+# ===== STATE =====
+active_trade = None
+last_heartbeat = 0
 
 # ===== TELEGRAM =====
 def send(msg):
@@ -22,152 +22,137 @@ def send(msg):
     except:
         pass
 
-# ===== RESET DAILY =====
-def reset_daily():
-    global sent_today, last_reset_day
-    today = datetime.now(UTC).date()
-
-    if last_reset_day != today:
-        sent_today.clear()
-        last_reset_day = today
-
-# ===== GET MIDCAP STOCKS =====
-def get_stocks():
-    url = f"https://financialmodelingprep.com/api/v3/stock-screener?marketCapMoreThan=2000000000&marketCapLowerThan=20000000000&volumeMoreThan=500000&limit=300&apikey={FMP_API_KEY}"
-    return [s["symbol"] for s in requests.get(url).json()]
-
-# ===== GET PRICE DATA =====
+# ===== DATA =====
 def get_data(symbol):
-    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?apikey={FMP_API_KEY}"
+    url = f"https://financialmodelingprep.com/api/v3/historical-chart/5min/{symbol}?apikey={FMP_API_KEY}"
     data = requests.get(url).json()
-    hist = data.get("historical", [])[:120]
 
-    closes = [c["close"] for c in hist][::-1]
-    volumes = [c["volume"] for c in hist][::-1]
+    closes = [c["close"] for c in data[:100]]
+    closes.reverse()
 
-    return closes, volumes
+    return closes
 
-# ===== FUNDAMENTALS =====
-def fundamentals(symbol):
-    try:
-        url = f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={FMP_API_KEY}"
-        d = requests.get(url).json()[0]
+# ===== FIND BEST STOCK =====
+def find_stock():
+    url = f"https://financialmodelingprep.com/api/v3/stock-screener?marketCapMoreThan=2000000000&marketCapLowerThan=20000000000&volumeMoreThan=500000&limit=100&apikey={FMP_API_KEY}"
+    stocks = [s["symbol"] for s in requests.get(url).json()]
 
-        return {
-            "debt": d.get("debtToEquity", 0),
-            "profit": d.get("profitMargins", 0),
-            "sector": d.get("sector", "")
-        }
-    except:
-        return None
+    best = None
+    best_score = 0
 
-# ===== HALAL FILTER =====
-def halal(f):
-    if not f: return False
-    if "Financial" in f["sector"]: return False
-    if f["debt"] > 1: return False
-    if f["profit"] <= 0: return False
-    return True
+    for s in stocks:
+        try:
+            closes = get_data(s)
+            if len(closes) < 50:
+                continue
 
-# ===== AI SCORING =====
-def score_stock(symbol):
-    try:
-        closes, volumes = get_data(symbol)
-        f = fundamentals(symbol)
+            price = closes[-1]
+            ma20 = sum(closes[-20:]) / 20
+            ma50 = sum(closes[-50:]) / 50
 
-        if not closes or len(closes) < 50 or not halal(f):
-            return None
+            if price > ma20 > ma50:
+                score = (price - ma20) / ma20
+                if score > best_score:
+                    best_score = score
+                    best = s
+        except:
+            continue
 
-        price = closes[-1]
+    return best
 
-        ma20 = sum(closes[-20:]) / 20
-        ma50 = sum(closes[-50:]) / 50
+# ===== TRADE MANAGER =====
+def manage_trade():
+    global active_trade
 
-        score = 0
+    symbol = active_trade["symbol"]
+    closes = get_data(symbol)
 
-        # STRONG TREND
-        if price > ma20 > ma50:
-            score += 25
+    if not closes:
+        return
 
-        # PULLBACK ENTRY
-        recent_high = max(closes[-20:])
-        pullback = (recent_high - price) / recent_high
-        if 0.03 < pullback < 0.08:
-            score += 20
+    price = closes[-1]
 
-        # VOLUME
-        avg_vol = sum(volumes[-20:]) / 20
-        if volumes[-1] > avg_vol * 1.3:
-            score += 15
+    # update highest
+    if price > active_trade["highest"]:
+        active_trade["highest"] = price
 
-        # FUNDAMENTALS
-        if f["profit"] > 0.1:
-            score += 15
+    profit = ((price - active_trade["entry"]) / active_trade["entry"]) * 100
 
-        # MOMENTUM
-        momentum = (price - closes[-10]) / closes[-10]
-        if momentum > 0.03:
-            score += 15
+    # ===== PROFIT UPDATE =====
+    send(f"📊 {symbol} Update: {price:.2f} | {profit:.2f}%")
 
-        # EXTRA BOOST (HIGH RR)
-        rr = (price * 1.18 - price) / (price - price * 0.94)
-        if rr > 2:
-            score += 10
+    # ===== LOCK PROFIT =====
+    if profit > 5 and not active_trade["locked"]:
+        active_trade["locked"] = True
+        send(f"🔒 LOCK PROFIT {symbol} +{profit:.2f}%")
 
-        confidence = min(score, 100)
+    # ===== TRAILING STOP =====
+    drop = ((active_trade["highest"] - price) / active_trade["highest"]) * 100
+    if active_trade["locked"] and drop > 2:
+        send(f"⚠️ EXIT TRAILING {symbol} +{profit:.2f}%")
+        active_trade = None
+        return
 
-        return {
-            "symbol": symbol,
-            "score": confidence,
-            "price": price,
-            "target": price * 1.18,   # HIGH PROFIT
-            "stop": price * 0.94
-        }
+    # ===== STOP LOSS =====
+    if price <= active_trade["stop"]:
+        send(f"❌ STOP LOSS {symbol}")
+        active_trade = None
+        return
 
-    except:
-        return None
+    # ===== TARGET =====
+    if price >= active_trade["target"]:
+        send(f"🎯 TARGET HIT {symbol} +{profit:.2f}%")
+        active_trade = None
 
 # ===== MAIN =====
 def run():
-    send("🚀 V8 TOP 3 HALAL SWING BOT LIVE")
+    global active_trade, last_heartbeat
+
+    send("🚀 V9 SINGLE TRADE BOT LIVE")
 
     while True:
         try:
-            reset_daily()
+            now = time.time()
 
-            stocks = get_stocks()
-            ranked = []
+            # heartbeat
+            if now - last_heartbeat > 3600:
+                send(f"💓 Alive {datetime.now(UTC).strftime('%H:%M:%S')}")
+                last_heartbeat = now
 
-            for s in stocks:
-                data = score_stock(s)
-                if data:
-                    ranked.append(data)
+            # ===== IF NO ACTIVE TRADE =====
+            if not active_trade:
+                stock = find_stock()
 
-            # SORT BEST FIRST
-            ranked = sorted(ranked, key=lambda x: x["score"], reverse=True)
+                if stock:
+                    closes = get_data(stock)
+                    price = closes[-1]
 
-            top = ranked[:TOP_N]
+                    active_trade = {
+                        "symbol": stock,
+                        "entry": price,
+                        "target": price * 1.12,
+                        "stop": price * 0.95,
+                        "highest": price,
+                        "locked": False
+                    }
 
-            msg = "🏆 TOP 3 HIGH PROBABILITY SWING STOCKS\n\n"
+                    send(f"""🚀 NEW TRADE: {stock}
 
-            for i, s in enumerate(top, 1):
-                msg += f"""{i}. {s['symbol']} | Confidence: {s['score']}%
+Entry: {price:.2f}
+Target: {price*1.12:.2f}
+Stop: {price*0.95:.2f}
 
-Entry: {s['price']:.2f}
-Target: {s['target']:.2f}
-Stop: {s['stop']:.2f}
+Mode: SINGLE TRADE ACTIVE
+""")
 
-Risk/Reward: HIGH
------------------------
-"""
-
-            send(msg)
+            else:
+                manage_trade()
 
             time.sleep(CHECK_INTERVAL)
 
         except Exception as e:
             print("ERROR:", e)
-            time.sleep(10)
+            time.sleep(5)
 
 # ===== START =====
 if __name__ == "__main__":
