@@ -8,19 +8,13 @@ import requests
 import yfinance as yf
 
 # =========================
-# FIXES
-# =========================
-
-yf.set_tz_cache_location("/tmp")
-
-# =========================
 # CONFIG
 # =========================
 
 TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 CHAT_ID = "7216850185"
 
-CHECK_INTERVAL = 1800  # 30 minutes
+CHECK_INTERVAL = 900  # 15 minutes
 
 WATCHLIST = [
     "AAPL",
@@ -36,13 +30,20 @@ WATCHLIST = [
 ]
 
 # =========================
+# FIX YFINANCE CACHE
+# =========================
+
+yf.set_tz_cache_location("/tmp")
+
+# =========================
 # GLOBAL STATE
 # =========================
 
 active_trade = None
+BOT_RUNNING = False
 
 # =========================
-# SESSION
+# REQUEST SESSION
 # =========================
 
 session = requests.Session()
@@ -67,14 +68,14 @@ def send(msg):
         )
 
         if response.status_code != 200:
-            print(f"Telegram API Error: {response.text}")
+            print("Telegram Error:", response.text)
 
     except Exception as e:
 
-        print(f"Telegram error: {e}", flush=True)
+        print("Telegram Send Error:", e)
 
 # =========================
-# MARKET HOURS CHECK
+# MARKET HOURS
 # =========================
 
 def market_open():
@@ -87,15 +88,14 @@ def market_open():
 
     total_minutes = now.hour * 60 + now.minute
 
-    # 13:30 UTC = 9:30 EST
-    # 20:00 UTC = 4:00 EST
+    # US market hours
     market_start = 13 * 60 + 30
     market_end = 20 * 60
 
     return market_start <= total_minutes <= market_end
 
 # =========================
-# MARKET DATA
+# GET MARKET DATA
 # =========================
 
 def get_data(symbol):
@@ -123,7 +123,8 @@ def get_data(symbol):
 
     except Exception as e:
 
-        print(f"DATA ERROR {symbol}: {e}", flush=True)
+        print(f"DATA ERROR {symbol}: {e}")
+
         return None
 
 # =========================
@@ -166,7 +167,7 @@ def find_stock():
     return best_stock
 
 # =========================
-# MANAGE ACTIVE TRADE
+# MANAGE TRADE
 # =========================
 
 def manage_trade():
@@ -178,14 +179,9 @@ def manage_trade():
     closes = get_data(symbol)
 
     if not closes:
-        print(f"No data for {symbol}")
         return
 
     price = closes[-1]
-
-    # Ignore frozen/stale prices
-    if price <= 0:
-        return
 
     # Update highest price
     if price > active_trade["highest"]:
@@ -197,7 +193,6 @@ def manage_trade():
         / active_trade["entry"]
     ) * 100
 
-    # Send update
     send(
         f"📊 {symbol}\n"
         f"Price: ${price:.2f}\n"
@@ -258,6 +253,18 @@ def manage_trade():
 def run():
 
     global active_trade
+    global BOT_RUNNING
+
+    # Prevent duplicate loops
+    if BOT_RUNNING:
+
+        print("Bot already running")
+        return
+
+    BOT_RUNNING = True
+
+    # Reset stale trades
+    active_trade = None
 
     send("🤖 Trading Bot Started")
 
@@ -268,7 +275,7 @@ def run():
             # Skip if market closed
             if not market_open():
 
-                print("Market closed... waiting")
+                print("Market Closed")
 
                 time.sleep(300)
                 continue
@@ -283,7 +290,7 @@ def run():
 
                 if not stock:
 
-                    print("No stock found")
+                    print("No valid stock found")
 
                     time.sleep(CHECK_INTERVAL)
                     continue
@@ -314,7 +321,7 @@ def run():
                 )
 
             # =========================
-            # MANAGE ACTIVE TRADE
+            # MANAGE CURRENT TRADE
             # =========================
 
             else:
@@ -327,15 +334,16 @@ def run():
 
         except Exception as e:
 
-            print(f"MAIN ERROR: {e}", flush=True)
+            print("MAIN ERROR:", e)
 
             gc.collect()
 
             time.sleep(60)
 
 # =========================
-# START
+# START BOT
 # =========================
 
 if __name__ == "__main__":
+
     run()
