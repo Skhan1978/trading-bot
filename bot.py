@@ -1,17 +1,14 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-import json
-import os
 import time
 import gc
-from datetime import datetime, UTC
 
 import requests
 import yfinance as yf
 
 # =========================
-# YFINANCE CACHE FIX
+# FIXES
 # =========================
 
 yf.set_tz_cache_location("/tmp")
@@ -23,7 +20,7 @@ yf.set_tz_cache_location("/tmp")
 TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 CHAT_ID = "7216850185"
 
-CHECK_INTERVAL = 900  # 15 minutes
+CHECK_INTERVAL = 1800  # 30 minutes
 
 WATCHLIST = [
     "AAPL",
@@ -38,62 +35,17 @@ WATCHLIST = [
     "SOFI"
 ]
 
-STATE_FILE = "state.json"
-
-# =========================
-# REQUEST SESSION
-# =========================
-
-session = requests.Session()
-
-# =========================
-# LOAD STATE
-# =========================
-
-def load_state():
-
-    if os.path.exists(STATE_FILE):
-
-        try:
-
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
-
-        except:
-            pass
-
-    return {
-        "startup_sent": False,
-        "active_trade": None,
-        "last_heartbeat": 0
-    }
-
-# =========================
-# SAVE STATE
-# =========================
-
-def save_state():
-
-    with open(STATE_FILE, "w") as f:
-
-        json.dump(
-            {
-                "startup_sent": startup_sent,
-                "active_trade": active_trade,
-                "last_heartbeat": last_heartbeat
-            },
-            f
-        )
-
 # =========================
 # GLOBAL STATE
 # =========================
 
-state = load_state()
+active_trade = None
 
-startup_sent = state["startup_sent"]
-active_trade = state["active_trade"]
-last_heartbeat = state["last_heartbeat"]
+# =========================
+# SESSION
+# =========================
+
+session = requests.Session()
 
 # =========================
 # TELEGRAM
@@ -179,6 +131,7 @@ def find_stock():
             ma20 = sum(closes[-20:]) / 20
             ma50 = sum(closes[-50:]) / 50
 
+            # bullish setup
             if price > ma20 > ma50:
 
                 score = (price - ma20) / ma20
@@ -213,7 +166,7 @@ def manage_trade():
 
     price = closes[-1]
 
-    # highest price
+    # update highest price
     if price > active_trade["highest"]:
         active_trade["highest"] = price
 
@@ -223,6 +176,7 @@ def manage_trade():
         / active_trade["entry"]
     ) * 100
 
+    # send update
     send(f"📊 {symbol} | ${price:.2f} | {profit:.2f}%")
 
     # lock profits
@@ -249,7 +203,6 @@ def manage_trade():
         )
 
         active_trade = None
-        save_state()
         return
 
     # stop loss
@@ -258,7 +211,6 @@ def manage_trade():
         send(f"❌ STOP LOSS {symbol}")
 
         active_trade = None
-        save_state()
         return
 
     # target hit
@@ -270,7 +222,6 @@ def manage_trade():
         )
 
         active_trade = None
-        save_state()
 
 # =========================
 # MAIN LOOP
@@ -278,36 +229,16 @@ def manage_trade():
 
 def run():
 
-    global startup_sent
-    global last_heartbeat
     global active_trade
-
-    # send startup once
-    if not startup_sent:
-
-        send("🚀 BOT LIVE (Single Trade Manager)")
-
-        startup_sent = True
-        save_state()
 
     while True:
 
         try:
 
-            now = time.time()
+            # =========================
+            # FIND NEW TRADE
+            # =========================
 
-            # heartbeat every hour
-            if now - last_heartbeat > 3600:
-
-                send(
-                    f"💓 Alive "
-                    f"{datetime.now(UTC).strftime('%H:%M:%S UTC')}"
-                )
-
-                last_heartbeat = now
-                save_state()
-
-            # no active trade
             if not active_trade:
 
                 stock = find_stock()
@@ -330,15 +261,16 @@ def run():
                     "locked": False
                 }
 
-                save_state()
-
                 send(
                     f"🚀 NEW TRADE: {stock}\n\n"
                     f"Entry: ${price:.2f}\n"
                     f"Target: ${price * 1.12:.2f}\n"
-                    f"Stop: ${price * 0.95:.2f}\n\n"
-                    f"Mode: Single Trade Active"
+                    f"Stop: ${price * 0.95:.2f}"
                 )
+
+            # =========================
+            # MANAGE ACTIVE TRADE
+            # =========================
 
             else:
 
