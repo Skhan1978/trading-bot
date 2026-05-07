@@ -10,8 +10,7 @@ import yfinance as yf
 # CONFIG
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("
-8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4")
+TELEGRAM_TOKEN = os.getenv("8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4")
 CHAT_ID = os.getenv("7216850185")
 
 CHECK_INTERVAL = 300  # 5 minutes
