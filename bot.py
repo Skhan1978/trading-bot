@@ -34,6 +34,7 @@ WATCHLIST = [
 active_trade = None
 last_heartbeat = 0
 startup_sent = False
+last_trade_time = 0
 
 # =========================
 # REQUEST SESSION
@@ -60,6 +61,7 @@ def send(msg):
             timeout=10
         )
 
+        print(msg, flush=True)
         print("TELEGRAM STATUS:", response.status_code, flush=True)
 
     except Exception as e:
@@ -87,7 +89,7 @@ def get_data(symbol):
 
         closes = df["Close"]
 
-        # fix newer yfinance versions
+        # Fix newer yfinance versions
         if hasattr(closes, "columns"):
             closes = closes.iloc[:, 0]
 
@@ -162,7 +164,7 @@ def manage_trade():
 
     price = closes[-1]
 
-    # update highest
+    # update highest price
     if price > active_trade["highest"]:
         active_trade["highest"] = price
 
@@ -233,8 +235,9 @@ def run():
     global active_trade
     global last_heartbeat
     global startup_sent
+    global last_trade_time
 
-    # prevent duplicate startup messages
+    # prevent duplicate startup alerts
     if not startup_sent:
 
         send("🚀 BOT LIVE (Single Trade Manager)")
@@ -263,6 +266,12 @@ def run():
 
             if not active_trade:
 
+                # prevent duplicate trades after restart
+                if time.time() - last_trade_time < 3600:
+
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+
                 stock = find_stock()
 
                 closes = get_data(stock)
@@ -282,6 +291,8 @@ def run():
                     "highest": price,
                     "locked": False
                 }
+
+                last_trade_time = time.time()
 
                 send(
                     f"🚀 NEW TRADE: {stock}\n\n"
