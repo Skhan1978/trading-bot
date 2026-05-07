@@ -3,7 +3,7 @@ warnings.filterwarnings("ignore")
 
 import time
 import gc
-
+import datetime
 import requests
 import yfinance as yf
 
@@ -57,7 +57,7 @@ def send(msg):
 
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-        session.post(
+        response = session.post(
             url,
             data={
                 "chat_id": CHAT_ID,
@@ -66,9 +66,33 @@ def send(msg):
             timeout=10
         )
 
+        if response.status_code != 200:
+            print(f"Telegram API Error: {response.text}")
+
     except Exception as e:
 
         print(f"Telegram error: {e}", flush=True)
+
+# =========================
+# MARKET HOURS CHECK
+# =========================
+
+def market_open():
+
+    now = datetime.datetime.utcnow()
+
+    # Monday-Friday only
+    if now.weekday() >= 5:
+        return False
+
+    total_minutes = now.hour * 60 + now.minute
+
+    # 13:30 UTC = 9:30 EST
+    # 20:00 UTC = 4:00 EST
+    market_start = 13 * 60 + 30
+    market_end = 20 * 60
+
+    return market_start <= total_minutes <= market_end
 
 # =========================
 # MARKET DATA
@@ -78,25 +102,19 @@ def get_data(symbol):
 
     try:
 
-        df = yf.download(
-            tickers=symbol,
-            period="5d",
-            interval="5m",
-            progress=False,
-            threads=False,
-            auto_adjust=True
+        ticker = yf.Ticker(symbol)
+
+        df = ticker.history(
+            period="2d",
+            interval="1m",
+            auto_adjust=True,
+            prepost=True
         )
 
         if df.empty:
             return None
 
-        closes = df["Close"]
-
-        # yfinance fix
-        if hasattr(closes, "columns"):
-            closes = closes.iloc[:, 0]
-
-        closes = closes.dropna().values.tolist()
+        closes = df["Close"].dropna().tolist()
 
         del df
         gc.collect()
@@ -131,7 +149,7 @@ def find_stock():
             ma20 = sum(closes[-20:]) / 20
             ma50 = sum(closes[-50:]) / 50
 
-            # bullish setup
+            # Bullish setup
             if price > ma20 > ma50:
 
                 score = (price - ma20) / ma20
@@ -141,11 +159,9 @@ def find_stock():
                     best_score = score
                     best_stock = symbol
 
-        except:
-            pass
+        except Exception as e:
 
-    if not best_stock:
-        best_stock = "AAPL"
+            print(f"SCAN ERROR {symbol}: {e}")
 
     return best_stock
 
@@ -162,62 +178,74 @@ def manage_trade():
     closes = get_data(symbol)
 
     if not closes:
+        print(f"No data for {symbol}")
         return
 
     price = closes[-1]
 
-    # update highest price
+    # Ignore frozen/stale prices
+    if price <= 0:
+        return
+
+    # Update highest price
     if price > active_trade["highest"]:
         active_trade["highest"] = price
 
-    # profit %
+    # Profit %
     profit = (
         (price - active_trade["entry"])
         / active_trade["entry"]
     ) * 100
 
-    # send update
-    send(f"📊 {symbol} | ${price:.2f} | {profit:.2f}%")
+    # Send update
+    send(
+        f"📊 {symbol}\n"
+        f"Price: ${price:.2f}\n"
+        f"Profit: {profit:.2f}%"
+    )
 
-    # lock profits
-    if profit > 5 and not active_trade["locked"]:
+    # Lock profits
+    if profit >= 5 and not active_trade["locked"]:
 
         active_trade["locked"] = True
 
         send(
-            f"🔒 LOCK PROFIT "
+            f"🔒 LOCK PROFIT\n"
             f"{symbol} +{profit:.2f}%"
         )
 
-    # trailing stop
+    # Trailing stop
     drop = (
         (active_trade["highest"] - price)
         / active_trade["highest"]
     ) * 100
 
-    if active_trade["locked"] and drop > 2:
+    if active_trade["locked"] and drop >= 2:
 
         send(
-            f"⚠️ EXIT "
+            f"⚠️ EXIT SIGNAL\n"
             f"{symbol} +{profit:.2f}%"
         )
 
         active_trade = None
         return
 
-    # stop loss
+    # Stop loss
     if price <= active_trade["stop"]:
 
-        send(f"❌ STOP LOSS {symbol}")
+        send(
+            f"❌ STOP LOSS HIT\n"
+            f"{symbol} {profit:.2f}%"
+        )
 
         active_trade = None
         return
 
-    # target hit
+    # Target hit
     if price >= active_trade["target"]:
 
         send(
-            f"🎯 TARGET HIT "
+            f"🎯 TARGET HIT\n"
             f"{symbol} +{profit:.2f}%"
         )
 
@@ -231,9 +259,19 @@ def run():
 
     global active_trade
 
+    send("🤖 Trading Bot Started")
+
     while True:
 
         try:
+
+            # Skip if market closed
+            if not market_open():
+
+                print("Market closed... waiting")
+
+                time.sleep(300)
+                continue
 
             # =========================
             # FIND NEW TRADE
@@ -242,6 +280,13 @@ def run():
             if not active_trade:
 
                 stock = find_stock()
+
+                if not stock:
+
+                    print("No stock found")
+
+                    time.sleep(CHECK_INTERVAL)
+                    continue
 
                 closes = get_data(stock)
 
@@ -286,7 +331,7 @@ def run():
 
             gc.collect()
 
-            time.sleep(30)
+            time.sleep(60)
 
 # =========================
 # START
