@@ -1,3 +1,5 @@
+import json
+import os
 import time
 import gc
 from datetime import datetime, UTC
@@ -12,7 +14,7 @@ import yfinance as yf
 TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 CHAT_ID = "7216850185"
 
-CHECK_INTERVAL = 300  # 5 minutes
+CHECK_INTERVAL = 300
 
 WATCHLIST = [
     "AAPL",
@@ -27,20 +29,61 @@ WATCHLIST = [
     "SOFI"
 ]
 
-# =========================
-# STATE
-# =========================
-
-active_trade = None
-last_heartbeat = 0
-startup_sent = False
-last_trade_time = 0
+STATE_FILE = "state.json"
 
 # =========================
-# REQUEST SESSION
+# SESSION
 # =========================
 
 session = requests.Session()
+
+# =========================
+# LOAD STATE
+# =========================
+
+def load_state():
+
+    if os.path.exists(STATE_FILE):
+
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+
+        except:
+            pass
+
+    return {
+        "startup_sent": False,
+        "active_trade": None,
+        "last_heartbeat": 0
+    }
+
+# =========================
+# SAVE STATE
+# =========================
+
+def save_state():
+
+    with open(STATE_FILE, "w") as f:
+
+        json.dump(
+            {
+                "startup_sent": startup_sent,
+                "active_trade": active_trade,
+                "last_heartbeat": last_heartbeat
+            },
+            f
+        )
+
+# =========================
+# GLOBAL STATE
+# =========================
+
+state = load_state()
+
+startup_sent = state["startup_sent"]
+active_trade = state["active_trade"]
+last_heartbeat = state["last_heartbeat"]
 
 # =========================
 # TELEGRAM
@@ -62,7 +105,7 @@ def send(msg):
         )
 
         print(msg, flush=True)
-        print("TELEGRAM STATUS:", response.status_code, flush=True)
+        print("STATUS:", response.status_code, flush=True)
 
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
@@ -89,7 +132,6 @@ def get_data(symbol):
 
         closes = df["Close"]
 
-        # Fix newer yfinance versions
         if hasattr(closes, "columns"):
             closes = closes.iloc[:, 0]
 
@@ -105,7 +147,7 @@ def get_data(symbol):
         return None
 
 # =========================
-# STOCK SCANNER
+# FIND STOCK
 # =========================
 
 def find_stock():
@@ -127,7 +169,6 @@ def find_stock():
             ma20 = sum(closes[-20:]) / 20
             ma50 = sum(closes[-50:]) / 50
 
-            # bullish trend
             if price > ma20 > ma50:
 
                 score = (price - ma20) / ma20
@@ -139,16 +180,13 @@ def find_stock():
         except Exception as e:
             print(f"SCAN ERROR {symbol}: {e}", flush=True)
 
-    # fallback
     if not best_stock:
         best_stock = "AAPL"
-
-    print(f"Selected stock: {best_stock}", flush=True)
 
     return best_stock
 
 # =========================
-# TRADE MANAGEMENT
+# MANAGE TRADE
 # =========================
 
 def manage_trade():
@@ -164,11 +202,9 @@ def manage_trade():
 
     price = closes[-1]
 
-    # update highest price
     if price > active_trade["highest"]:
         active_trade["highest"] = price
 
-    # profit %
     profit = (
         (price - active_trade["entry"])
         / active_trade["entry"]
@@ -181,10 +217,7 @@ def manage_trade():
 
         active_trade["locked"] = True
 
-        send(
-            f"🔒 LOCK PROFIT "
-            f"{symbol} +{profit:.2f}%"
-        )
+        send(f"🔒 LOCK PROFIT {symbol} +{profit:.2f}%")
 
     # trailing stop
     drop = (
@@ -194,37 +227,28 @@ def manage_trade():
 
     if active_trade["locked"] and drop > 2:
 
-        send(
-            f"⚠️ EXIT (Trailing) "
-            f"{symbol} +{profit:.2f}%"
-        )
+        send(f"⚠️ EXIT {symbol} +{profit:.2f}%")
 
         active_trade = None
-        gc.collect()
+        save_state()
         return
 
     # stop loss
     if price <= active_trade["stop"]:
 
-        send(
-            f"❌ STOP LOSS "
-            f"{symbol} at ${price:.2f}"
-        )
+        send(f"❌ STOP LOSS {symbol}")
 
         active_trade = None
-        gc.collect()
+        save_state()
         return
 
     # target hit
     if price >= active_trade["target"]:
 
-        send(
-            f"🎯 TARGET HIT "
-            f"{symbol} +{profit:.2f}%"
-        )
+        send(f"🎯 TARGET HIT {symbol} +{profit:.2f}%")
 
         active_trade = None
-        gc.collect()
+        save_state()
 
 # =========================
 # MAIN LOOP
@@ -232,17 +256,17 @@ def manage_trade():
 
 def run():
 
-    global active_trade
-    global last_heartbeat
     global startup_sent
-    global last_trade_time
+    global last_heartbeat
+    global active_trade
 
-    # prevent duplicate startup alerts
+    # startup message only once
     if not startup_sent:
 
         send("🚀 BOT LIVE (Single Trade Manager)")
 
         startup_sent = True
+        save_state()
 
     while True:
 
@@ -259,25 +283,16 @@ def run():
                 )
 
                 last_heartbeat = now
+                save_state()
 
-            # =========================
-            # FIND NEW TRADE
-            # =========================
-
+            # no active trade
             if not active_trade:
-
-                # prevent duplicate trades after restart
-                if time.time() - last_trade_time < 3600:
-
-                    time.sleep(CHECK_INTERVAL)
-                    continue
 
                 stock = find_stock()
 
                 closes = get_data(stock)
 
                 if not closes:
-
                     time.sleep(CHECK_INTERVAL)
                     continue
 
@@ -292,7 +307,7 @@ def run():
                     "locked": False
                 }
 
-                last_trade_time = time.time()
+                save_state()
 
                 send(
                     f"🚀 NEW TRADE: {stock}\n\n"
@@ -301,10 +316,6 @@ def run():
                     f"Stop: ${price * 0.95:.2f}\n\n"
                     f"Mode: Single Trade Active"
                 )
-
-            # =========================
-            # MANAGE ACTIVE TRADE
-            # =========================
 
             else:
                 manage_trade()
