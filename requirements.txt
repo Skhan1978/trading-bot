@@ -1,5 +1,7 @@
-yfinance==0.2.54
-pandas==2.1.4
 numpy==1.26.4
+pandas==2.0.3
+yfinance==0.2.54
 requests==2.31.0
 ta==0.10.2
+setuptools==69.5.1
+wheel==0.43.0
