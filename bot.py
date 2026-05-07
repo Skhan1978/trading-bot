@@ -10,7 +10,8 @@ import yfinance as yf
 # CONFIG
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4")
+TELEGRAM_TOKEN = os.getenv("
+8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4")
 CHAT_ID = os.getenv("7216850185")
 
 CHECK_INTERVAL = 300  # 5 minutes
@@ -46,10 +47,15 @@ session = requests.Session()
 # =========================
 
 def send(msg):
+
     try:
+        # debug info
+        print("TOKEN:", TELEGRAM_TOKEN, flush=True)
+        print("CHAT_ID:", CHAT_ID, flush=True)
+
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-        session.post(
+        response = session.post(
             url,
             data={
                 "chat_id": CHAT_ID,
@@ -58,7 +64,8 @@ def send(msg):
             timeout=10
         )
 
-        print(msg, flush=True)
+        print("TELEGRAM STATUS:", response.status_code, flush=True)
+        print("TELEGRAM RESPONSE:", response.text, flush=True)
 
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
@@ -90,7 +97,6 @@ def get_data(symbol):
 
         closes = closes.dropna().values.tolist()
 
-        # cleanup memory
         del df
         gc.collect()
 
@@ -281,17 +287,11 @@ def run():
                     f"Mode: Single Trade Active"
                 )
 
-            # =========================
-            # MANAGE ACTIVE TRADE
-            # =========================
-
             else:
                 manage_trade()
 
-            # memory cleanup
             gc.collect()
 
-            # wait
             time.sleep(CHECK_INTERVAL)
 
         except Exception as e:
