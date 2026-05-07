@@ -6,7 +6,6 @@ import gc
 import datetime
 import requests
 import yfinance as yf
-import math
 
 # =========================
 # CONFIG
@@ -15,48 +14,32 @@ import math
 TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 CHAT_ID = "7216850185"
 
-CHECK_INTERVAL = 900  # 15 minutes
+CHECK_INTERVAL = 60
 
-MAX_DAILY_LOSS = -5      # stop trading below this %
-MAX_TRADES_PER_DAY = 5
-COOLDOWN_MINUTES = 60
+MAX_DAILY_LOSS = -3
+MAX_TRADES_PER_DAY = 3
+COOLDOWN_MINUTES = 90
 
 WATCHLIST = [
-    "AAPL",
     "NVDA",
     "MSFT",
-    "AMD",
-    "TSLA",
     "META",
     "AMZN",
-    "GOOGL",
     "PLTR",
-    "SOFI"
+    "AMD",
+    "TSLA"
 ]
-
-# =========================
-# FIX YFINANCE
-# =========================
 
 yf.set_tz_cache_location("/tmp")
 
-# =========================
-# GLOBALS
-# =========================
+session = requests.Session()
 
 active_trade = None
-BOT_RUNNING = False
-
 trade_history = []
 last_trade_time = {}
+
 daily_pnl = 0
 daily_trade_count = 0
-
-# =========================
-# SESSION
-# =========================
-
-session = requests.Session()
 
 # =========================
 # TELEGRAM
@@ -77,9 +60,8 @@ def send(msg):
             timeout=10
         )
 
-    except Exception as e:
-
-        print("Telegram Error:", e)
+    except:
+        pass
 
 # =========================
 # MARKET HOURS
@@ -94,26 +76,20 @@ def market_open():
 
     total = now.hour * 60 + now.minute
 
-    market_start = 13 * 60 + 30
-    market_end = 20 * 60
-
-    return market_start <= total <= market_end
+    return 13 * 60 + 30 <= total <= 20 * 60
 
 # =========================
-# GET DATA
+# DATA
 # =========================
 
-def get_dataframe(symbol):
+def get_df(symbol, interval="5m", period="5d"):
 
     try:
 
-        ticker = yf.Ticker(symbol)
-
-        df = ticker.history(
-            period="5d",
-            interval="5m",
-            auto_adjust=True,
-            prepost=False
+        df = yf.Ticker(symbol).history(
+            period=period,
+            interval=interval,
+            auto_adjust=True
         )
 
         if df.empty:
@@ -121,10 +97,7 @@ def get_dataframe(symbol):
 
         return df.dropna()
 
-    except Exception as e:
-
-        print(f"DATA ERROR {symbol}: {e}")
-
+    except:
         return None
 
 # =========================
@@ -139,17 +112,23 @@ def calculate_rsi(closes, period=14):
     gains = []
     losses = []
 
-    for i in range(1, period + 1):
+    for i in range(1, len(closes)):
 
-        change = closes[-i] - closes[-i - 1]
+        diff = closes[i] - closes[i - 1]
 
-        if change > 0:
-            gains.append(change)
-        else:
-            losses.append(abs(change))
+        gains.append(max(diff, 0))
+        losses.append(abs(min(diff, 0)))
 
-    avg_gain = sum(gains) / period if gains else 0.01
-    avg_loss = sum(losses) / period if losses else 0.01
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+
+        avg_gain = ((avg_gain * 13) + gains[i]) / 14
+        avg_loss = ((avg_loss * 13) + losses[i]) / 14
+
+    if avg_loss == 0:
+        return 100
 
     rs = avg_gain / avg_loss
 
@@ -177,18 +156,15 @@ def calculate_atr(df, period=14):
 
         trs.append(tr)
 
-    if len(trs) < period:
-        return 1
-
     return sum(trs[-period:]) / period
 
 # =========================
-# MARKET TREND FILTER
+# MARKET FILTER
 # =========================
 
 def market_bullish():
 
-    spy = get_dataframe("SPY")
+    spy = get_df("SPY")
 
     if spy is None:
         return False
@@ -201,13 +177,18 @@ def market_bullish():
     ma20 = sum(closes[-20:]) / 20
     ma50 = sum(closes[-50:]) / 50
 
-    return ma20 > ma50
+    rsi = calculate_rsi(closes)
+
+    return (
+        closes[-1] > ma20 > ma50
+        and rsi > 55
+    )
 
 # =========================
-# COOLDOWN CHECK
+# COOLDOWN
 # =========================
 
-def cooldown_active(symbol):
+def cooldown(symbol):
 
     if symbol not in last_trade_time:
         return False
@@ -219,40 +200,23 @@ def cooldown_active(symbol):
     return elapsed < COOLDOWN_MINUTES
 
 # =========================
-# FIND STOCK
+# FIND BEST STOCK
 # =========================
 
 def find_stock():
 
-    global daily_trade_count
-
-    if daily_trade_count >= MAX_TRADES_PER_DAY:
-
-        print("Daily trade limit reached")
-
-        return None
-
-    if daily_pnl <= MAX_DAILY_LOSS:
-
-        print("Daily loss limit reached")
-
-        return None
+    best = None
+    best_score = -999
 
     if not market_bullish():
-
-        print("Market bearish")
-
         return None
-
-    best_stock = None
-    best_score = -999
 
     for symbol in WATCHLIST:
 
-        if cooldown_active(symbol):
+        if cooldown(symbol):
             continue
 
-        df = get_dataframe(symbol)
+        df = get_df(symbol)
 
         if df is None:
             continue
@@ -267,7 +231,8 @@ def find_stock():
 
             price = closes[-1]
 
-            ma20 = sum(closes[-20:]) / 20
+            ema9 = sum(closes[-9:]) / 9
+            ema20 = sum(closes[-20:]) / 20
             ma50 = sum(closes[-50:]) / 50
 
             rsi = calculate_rsi(closes)
@@ -275,48 +240,63 @@ def find_stock():
             avg_volume = sum(volumes[-20:]) / 20
             current_volume = volumes[-1]
 
+            relative_volume = current_volume / avg_volume
+
+            recent_high = max(closes[-11:-1])
+
             atr = calculate_atr(df)
 
-            recent_high = max(closes[-10:])
+            trend = ema9 > ema20 > ma50
+            strong_rsi = 55 <= rsi <= 68
+            breakout = price > recent_high
+            volume_ok = relative_volume > 1.3
 
-            bullish_trend = price > ma20 > ma50
+            volatility_ok = (atr / price) < 0.025
 
-            healthy_rsi = 50 <= rsi <= 65
+            range_ok = (
+                (max(closes[-5:]) - min(closes[-5:]))
+                / price
+            ) > 0.01
 
-            volume_spike = current_volume > avg_volume * 1.5
+            # DAILY TREND CONFIRMATION
+            daily = get_df(symbol, "1d", "3mo")
 
-            breakout = price >= recent_high * 0.998
+            if daily is None:
+                continue
 
-            not_extended = (
-                (price - ma20) / ma20
-            ) < 0.03
+            daily_closes = daily["Close"].tolist()
 
-            atr_safe = atr / price < 0.03
+            daily_ma20 = sum(daily_closes[-20:]) / 20
+
+            daily_bull = (
+                daily_closes[-1] > daily_ma20
+            )
 
             if (
-                bullish_trend
-                and healthy_rsi
-                and volume_spike
+                trend
+                and strong_rsi
                 and breakout
-                and not_extended
-                and atr_safe
+                and volume_ok
+                and volatility_ok
+                and range_ok
+                and daily_bull
             ):
 
                 score = (
-                    ((price - ma20) / ma20)
-                    + (current_volume / avg_volume)
+                    (relative_volume * 40)
+                    + ((rsi - 50) * 2)
+                    + (((price - ema20) / ema20) * 100)
                 )
 
                 if score > best_score:
 
                     best_score = score
-                    best_stock = symbol
+                    best = symbol
 
-        except Exception as e:
+        except:
+            continue
 
-            print(f"SCAN ERROR {symbol}: {e}")
-
-    return best_stock
+    return best
 
 # =========================
 # MANAGE TRADE
@@ -326,18 +306,15 @@ def manage_trade():
 
     global active_trade
     global daily_pnl
-    global trade_history
 
     symbol = active_trade["symbol"]
 
-    df = get_dataframe(symbol)
+    df = get_df(symbol)
 
     if df is None:
         return
 
-    closes = df["Close"].tolist()
-
-    price = closes[-1]
+    price = df["Close"].tolist()[-1]
 
     if price > active_trade["highest"]:
         active_trade["highest"] = price
@@ -350,56 +327,38 @@ def manage_trade():
     send(
         f"📊 {symbol}\n"
         f"Price: ${price:.2f}\n"
-        f"Profit: {profit:.2f}%"
+        f"PnL: {profit:.2f}%"
     )
 
-    # =========================
-    # BREAK EVEN PROTECTION
-    # =========================
+    # BREAKEVEN
 
     if profit >= 2 and not active_trade["breakeven"]:
 
         active_trade["breakeven"] = True
-
         active_trade["stop"] = active_trade["entry"]
 
-        send(
-            f"🛡 BREAK EVEN ENABLED\n"
-            f"{symbol}"
-        )
+        send(f"🛡 Breakeven Enabled {symbol}")
 
-    # =========================
-    # PROFIT LOCK
-    # =========================
+    # PARTIAL PROFIT
 
-    if profit >= 4 and not active_trade["locked"]:
+    if profit >= 3 and not active_trade["partial"]:
 
-        active_trade["locked"] = True
+        active_trade["partial"] = True
 
-        send(
-            f"🔒 PROFIT LOCKED\n"
-            f"{symbol} +{profit:.2f}%"
-        )
+        send(f"💰 Partial Profit Taken {symbol}")
 
-    # =========================
     # TRAILING STOP
-    # =========================
 
     drop = (
         (active_trade["highest"] - price)
         / active_trade["highest"]
     ) * 100
 
-    if active_trade["locked"] and drop >= 1.5:
+    if profit > 2 and drop >= 1.2:
 
-        send(
-            f"⚠️ EXIT SIGNAL\n"
-            f"{symbol} +{profit:.2f}%"
-        )
+        send(f"⚠️ TRAILING EXIT {symbol} {profit:.2f}%")
 
         daily_pnl += profit
-
-        trade_history.append(profit)
 
         last_trade_time[symbol] = time.time()
 
@@ -407,62 +366,17 @@ def manage_trade():
 
         return
 
-    # =========================
     # STOP LOSS
-    # =========================
 
     if price <= active_trade["stop"]:
 
-        send(
-            f"❌ STOP LOSS HIT\n"
-            f"{symbol} {profit:.2f}%"
-        )
+        send(f"❌ STOP HIT {symbol} {profit:.2f}%")
 
         daily_pnl += profit
-
-        trade_history.append(profit)
 
         last_trade_time[symbol] = time.time()
 
         active_trade = None
-
-        return
-
-    # =========================
-    # TARGET HIT
-    # =========================
-
-    if price >= active_trade["target"]:
-
-        send(
-            f"🎯 TARGET HIT\n"
-            f"{symbol} +{profit:.2f}%"
-        )
-
-        daily_pnl += profit
-
-        trade_history.append(profit)
-
-        last_trade_time[symbol] = time.time()
-
-        active_trade = None
-
-# =========================
-# DAILY REPORT
-# =========================
-
-def send_daily_report():
-
-    wins = len([x for x in trade_history if x > 0])
-    losses = len([x for x in trade_history if x <= 0])
-
-    send(
-        f"📈 DAILY REPORT\n\n"
-        f"Trades: {len(trade_history)}\n"
-        f"Wins: {wins}\n"
-        f"Losses: {losses}\n"
-        f"Daily PnL: {daily_pnl:.2f}%"
-    )
 
 # =========================
 # MAIN LOOP
@@ -471,92 +385,77 @@ def send_daily_report():
 def run():
 
     global active_trade
-    global BOT_RUNNING
     global daily_trade_count
 
-    if BOT_RUNNING:
-        return
-
-    BOT_RUNNING = True
-
-    active_trade = None
-
-    send("🤖 Professional Trading Bot Started")
-
-    last_report_day = datetime.datetime.utcnow().day
+    send("🤖 Stable Trading Bot Started")
 
     while True:
 
         try:
-
-            now = datetime.datetime.utcnow()
-
-            # daily reset
-            if now.day != last_report_day:
-
-                send_daily_report()
-
-                daily_trade_count = 0
-
-                last_report_day = now.day
 
             if not market_open():
 
                 time.sleep(300)
                 continue
 
-            # =========================
-            # NEW TRADE
-            # =========================
+            if daily_trade_count >= MAX_TRADES_PER_DAY:
+
+                time.sleep(600)
+                continue
+
+            if daily_pnl <= MAX_DAILY_LOSS:
+
+                send("🛑 DAILY LOSS LIMIT HIT")
+
+                time.sleep(1800)
+                continue
 
             if not active_trade:
 
                 stock = find_stock()
 
-                if not stock:
+                if stock:
 
-                    time.sleep(CHECK_INTERVAL)
-                    continue
+                    df = get_df(stock)
 
-                df = get_dataframe(stock)
+                    closes = df["Close"].tolist()
 
-                if df is None:
+                    price = closes[-1]
 
-                    time.sleep(CHECK_INTERVAL)
-                    continue
+                    atr = calculate_atr(df)
 
-                closes = df["Close"].tolist()
+                    stop = round(
+                        max(
+                            price - (atr * 1.5),
+                            price * 0.975
+                        ),
+                        2
+                    )
 
-                atr = calculate_atr(df)
+                    target = round(
+                        price + (atr * 3),
+                        2
+                    )
 
-                price = closes[-1]
+                    active_trade = {
+                        "symbol": stock,
+                        "entry": price,
+                        "target": target,
+                        "stop": stop,
+                        "highest": price,
+                        "breakeven": False,
+                        "partial": False
+                    }
 
-                stop = round(price - (atr * 2), 2)
+                    daily_trade_count += 1
 
-                target = round(price + (atr * 4), 2)
-
-                active_trade = {
-                    "symbol": stock,
-                    "entry": price,
-                    "target": target,
-                    "stop": stop,
-                    "highest": price,
-                    "locked": False,
-                    "breakeven": False
-                }
-
-                daily_trade_count += 1
-
-                send(
-                    f"🚀 HIGH QUALITY TRADE: {stock}\n\n"
-                    f"Entry: ${price:.2f}\n"
-                    f"Target: ${target:.2f}\n"
-                    f"Stop: ${stop:.2f}"
-                )
-
-            # =========================
-            # MANAGE TRADE
-            # =========================
+                    send(
+                        f"🚀 HIGH PROBABILITY TRADE\n\n"
+                        f"{stock}\n"
+                        f"Entry: ${price:.2f}\n"
+                        f"Target: ${target:.2f}\n"
+                        f"Stop: ${stop:.2f}"
+                    )
 
             else:
 
@@ -568,13 +467,9 @@ def run():
 
         except Exception as e:
 
-            print("MAIN ERROR:", e)
+            print(e)
 
             time.sleep(60)
-
-# =========================
-# START
-# =========================
 
 if __name__ == "__main__":
 
