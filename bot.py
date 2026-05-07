@@ -26,24 +26,26 @@ WATCHLIST = [
     "AMZN",
     "GOOGL",
     "PLTR",
-    "SOFI"
+    "SOFI",
+    "QQQ",
+    "SPY"
 ]
 
 # =========================
-# FIX YFINANCE CACHE
+# YFINANCE FIX
 # =========================
 
 yf.set_tz_cache_location("/tmp")
 
 # =========================
-# GLOBAL STATE
+# GLOBALS
 # =========================
 
 active_trade = None
 BOT_RUNNING = False
 
 # =========================
-# REQUEST SESSION
+# SESSION
 # =========================
 
 session = requests.Session()
@@ -58,7 +60,7 @@ def send(msg):
 
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-        response = session.post(
+        session.post(
             url,
             data={
                 "chat_id": CHAT_ID,
@@ -67,12 +69,9 @@ def send(msg):
             timeout=10
         )
 
-        if response.status_code != 200:
-            print("Telegram Error:", response.text)
-
     except Exception as e:
 
-        print("Telegram Send Error:", e)
+        print("Telegram Error:", e)
 
 # =========================
 # MARKET HOURS
@@ -82,44 +81,38 @@ def market_open():
 
     now = datetime.datetime.utcnow()
 
-    # Monday-Friday only
+    # Monday-Friday
     if now.weekday() >= 5:
         return False
 
-    total_minutes = now.hour * 60 + now.minute
+    total = now.hour * 60 + now.minute
 
-    # US market hours
     market_start = 13 * 60 + 30
     market_end = 20 * 60
 
-    return market_start <= total_minutes <= market_end
+    return market_start <= total <= market_end
 
 # =========================
-# GET MARKET DATA
+# MARKET DATA
 # =========================
 
-def get_data(symbol):
+def get_dataframe(symbol):
 
     try:
 
         ticker = yf.Ticker(symbol)
 
         df = ticker.history(
-            period="2d",
-            interval="1m",
+            period="5d",
+            interval="5m",
             auto_adjust=True,
-            prepost=True
+            prepost=False
         )
 
         if df.empty:
             return None
 
-        closes = df["Close"].dropna().tolist()
-
-        del df
-        gc.collect()
-
-        return closes
+        return df.dropna()
 
     except Exception as e:
 
@@ -128,32 +121,131 @@ def get_data(symbol):
         return None
 
 # =========================
+# RSI
+# =========================
+
+def calculate_rsi(closes, period=14):
+
+    if len(closes) < period + 1:
+        return 50
+
+    gains = []
+    losses = []
+
+    for i in range(1, period + 1):
+
+        change = closes[-i] - closes[-i - 1]
+
+        if change > 0:
+            gains.append(change)
+        else:
+            losses.append(abs(change))
+
+    avg_gain = sum(gains) / period if gains else 0.01
+    avg_loss = sum(losses) / period if losses else 0.01
+
+    rs = avg_gain / avg_loss
+
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+# =========================
+# MARKET TREND FILTER
+# =========================
+
+def market_bullish():
+
+    spy = get_dataframe("SPY")
+
+    if spy is None:
+        return False
+
+    closes = spy["Close"].tolist()
+
+    if len(closes) < 50:
+        return False
+
+    ma20 = sum(closes[-20:]) / 20
+    ma50 = sum(closes[-50:]) / 50
+
+    return ma20 > ma50
+
+# =========================
 # FIND BEST STOCK
 # =========================
 
 def find_stock():
+
+    # Avoid trading in weak market
+    if not market_bullish():
+
+        print("Market trend bearish")
+
+        return None
 
     best_stock = None
     best_score = -999
 
     for symbol in WATCHLIST:
 
-        closes = get_data(symbol)
+        if symbol in ["SPY", "QQQ"]:
+            continue
 
-        if not closes or len(closes) < 50:
+        df = get_dataframe(symbol)
+
+        if df is None:
             continue
 
         try:
+
+            closes = df["Close"].tolist()
+            volumes = df["Volume"].tolist()
+
+            if len(closes) < 50:
+                continue
 
             price = closes[-1]
 
             ma20 = sum(closes[-20:]) / 20
             ma50 = sum(closes[-50:]) / 50
 
-            # Bullish setup
-            if price > ma20 > ma50:
+            rsi = calculate_rsi(closes)
 
-                score = (price - ma20) / ma20
+            avg_volume = sum(volumes[-20:]) / 20
+            current_volume = volumes[-1]
+
+            recent_high = max(closes[-10:])
+
+            # =========================
+            # ENTRY CONDITIONS
+            # =========================
+
+            bullish_trend = price > ma20 > ma50
+
+            healthy_rsi = 45 <= rsi <= 65
+
+            volume_spike = current_volume > avg_volume * 1.3
+
+            breakout = price >= recent_high * 0.998
+
+            # avoid extended moves
+            not_overextended = (
+                (price - ma20) / ma20
+            ) < 0.04
+
+            if (
+                bullish_trend
+                and healthy_rsi
+                and volume_spike
+                and breakout
+                and not_overextended
+            ):
+
+                score = (
+                    ((price - ma20) / ma20)
+                    + (current_volume / avg_volume)
+                )
 
                 if score > best_score:
 
@@ -176,18 +268,19 @@ def manage_trade():
 
     symbol = active_trade["symbol"]
 
-    closes = get_data(symbol)
+    df = get_dataframe(symbol)
 
-    if not closes:
+    if df is None:
         return
+
+    closes = df["Close"].tolist()
 
     price = closes[-1]
 
-    # Update highest price
+    # update highest
     if price > active_trade["highest"]:
         active_trade["highest"] = price
 
-    # Profit %
     profit = (
         (price - active_trade["entry"])
         / active_trade["entry"]
@@ -199,23 +292,29 @@ def manage_trade():
         f"Profit: {profit:.2f}%"
     )
 
-    # Lock profits
-    if profit >= 5 and not active_trade["locked"]:
+    # =========================
+    # PROFIT LOCK
+    # =========================
+
+    if profit >= 4 and not active_trade["locked"]:
 
         active_trade["locked"] = True
 
         send(
-            f"🔒 LOCK PROFIT\n"
+            f"🔒 PROFIT LOCKED\n"
             f"{symbol} +{profit:.2f}%"
         )
 
-    # Trailing stop
+    # =========================
+    # TRAILING STOP
+    # =========================
+
     drop = (
         (active_trade["highest"] - price)
         / active_trade["highest"]
     ) * 100
 
-    if active_trade["locked"] and drop >= 2:
+    if active_trade["locked"] and drop >= 1.5:
 
         send(
             f"⚠️ EXIT SIGNAL\n"
@@ -225,7 +324,10 @@ def manage_trade():
         active_trade = None
         return
 
-    # Stop loss
+    # =========================
+    # HARD STOP LOSS
+    # =========================
+
     if price <= active_trade["stop"]:
 
         send(
@@ -236,7 +338,10 @@ def manage_trade():
         active_trade = None
         return
 
-    # Target hit
+    # =========================
+    # TARGET HIT
+    # =========================
+
     if price >= active_trade["target"]:
 
         send(
@@ -255,7 +360,6 @@ def run():
     global active_trade
     global BOT_RUNNING
 
-    # Prevent duplicate loops
     if BOT_RUNNING:
 
         print("Bot already running")
@@ -263,16 +367,15 @@ def run():
 
     BOT_RUNNING = True
 
-    # Reset stale trades
     active_trade = None
 
-    send("🤖 Trading Bot Started")
+    send("🤖 Advanced Trading Bot Started")
 
     while True:
 
         try:
 
-            # Skip if market closed
+            # market closed
             if not market_open():
 
                 print("Market Closed")
@@ -281,7 +384,7 @@ def run():
                 continue
 
             # =========================
-            # FIND NEW TRADE
+            # NEW TRADE
             # =========================
 
             if not active_trade:
@@ -290,38 +393,40 @@ def run():
 
                 if not stock:
 
-                    print("No valid stock found")
+                    print("No quality setup found")
 
                     time.sleep(CHECK_INTERVAL)
                     continue
 
-                closes = get_data(stock)
+                df = get_dataframe(stock)
 
-                if not closes:
+                if df is None:
 
                     time.sleep(CHECK_INTERVAL)
                     continue
+
+                closes = df["Close"].tolist()
 
                 price = closes[-1]
 
                 active_trade = {
                     "symbol": stock,
                     "entry": price,
-                    "target": round(price * 1.12, 2),
-                    "stop": round(price * 0.95, 2),
+                    "target": round(price * 1.10, 2),
+                    "stop": round(price * 0.97, 2),
                     "highest": price,
                     "locked": False
                 }
 
                 send(
-                    f"🚀 NEW TRADE: {stock}\n\n"
+                    f"🚀 HIGH QUALITY TRADE: {stock}\n\n"
                     f"Entry: ${price:.2f}\n"
-                    f"Target: ${price * 1.12:.2f}\n"
-                    f"Stop: ${price * 0.95:.2f}"
+                    f"Target: ${price * 1.10:.2f}\n"
+                    f"Stop: ${price * 0.97:.2f}"
                 )
 
             # =========================
-            # MANAGE CURRENT TRADE
+            # MANAGE TRADE
             # =========================
 
             else:
@@ -341,7 +446,7 @@ def run():
             time.sleep(60)
 
 # =========================
-# START BOT
+# START
 # =========================
 
 if __name__ == "__main__":
