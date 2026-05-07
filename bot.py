@@ -1,40 +1,66 @@
 import os
-
-# 🔥 AUTO INSTALL (Render safe)
-os.system("pip install yfinance pandas requests --quiet")
+import time
+import gc
+from datetime import datetime, UTC
 
 import requests
-import time
-from datetime import datetime, UTC
 import yfinance as yf
 
 # ===== CONFIG =====
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+TELEGRAM_TOKEN = os.getenv("8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4")
+CHAT_ID = os.getenv("7216850185")
 
 CHECK_INTERVAL = 300  # 5 minutes
+
+WATCHLIST = [
+    "AAPL", "NVDA", "MSFT", "AMD", "TSLA",
+    "META", "AMZN", "GOOGL", "PLTR", "SOFI"
+]
 
 # ===== STATE =====
 active_trade = None
 last_heartbeat = 0
 
+# ===== REQUEST SESSION =====
+session = requests.Session()
+
 # ===== TELEGRAM =====
 def send(msg):
     try:
-        url = f"https://api.telegram.org/bot{8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4}/sendMessage"
-        requests.post(url, data={"chat_id": 7216850185, "text": msg}, timeout=5)
-    except Exception as e:
-        print("Telegram error:", e, flush=True)
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-# ===== DATA (FIXED) =====
+        session.post(
+            url,
+            data={
+                "chat_id": CHAT_ID,
+                "text": msg
+            },
+            timeout=10
+        )
+
+    except Exception as e:
+        print(f"Telegram error: {e}", flush=True)
+
+# ===== DATA =====
 def get_data(symbol):
     try:
-        data = yf.download(symbol, period="5d", interval="5m", progress=False)
+        df = yf.download(
+            tickers=symbol,
+            period="5d",
+            interval="5m",
+            progress=False,
+            threads=False
+        )
 
-        if data.empty:
+        if df.empty:
             return None
 
-        closes = data["Close"].dropna().values.tolist()
+        closes = df["Close"].dropna().tolist()
+
+        # cleanup memory
+        del df
+        gc.collect()
+
         return closes
 
     except Exception as e:
@@ -43,35 +69,39 @@ def get_data(symbol):
 
 # ===== SCANNER =====
 def find_stock():
-    watchlist = [
-        "AAPL","NVDA","MSFT","AMD","TSLA",
-        "META","AMZN","GOOGL","PLTR","SOFI"
-    ]
-
     best = None
-    best_score = -1
+    best_score = -999
 
-    for s in watchlist:
-        closes = get_data(s)
+    for symbol in WATCHLIST:
+
+        closes = get_data(symbol)
+
         if not closes or len(closes) < 50:
             continue
 
-        price = closes[-1]
-        ma20 = sum(closes[-20:]) / 20
-        ma50 = sum(closes[-50:]) / 50
+        try:
+            price = closes[-1]
 
-        if price > ma20 > ma50:
-            score = (price - ma20) / ma20
+            ma20 = sum(closes[-20:]) / 20
+            ma50 = sum(closes[-50:]) / 50
 
-            if score > best_score:
-                best_score = score
-                best = s
+            if price > ma20 > ma50:
 
-    # 🔥 fallback so bot ALWAYS trades
+                score = (price - ma20) / ma20
+
+                if score > best_score:
+                    best_score = score
+                    best = symbol
+
+        except Exception as e:
+            print(f"SCAN ERROR {symbol}: {e}", flush=True)
+
+    # fallback
     if not best:
         best = "AAPL"
 
-    print("Selected stock:", best, flush=True)
+    print(f"Selected stock: {best}", flush=True)
+
     return best
 
 # ===== TRADE MANAGEMENT =====
@@ -79,6 +109,7 @@ def manage_trade():
     global active_trade
 
     symbol = active_trade["symbol"]
+
     closes = get_data(symbol)
 
     if not closes:
@@ -86,90 +117,133 @@ def manage_trade():
 
     price = closes[-1]
 
-    # Update highest
+    # update highest
     if price > active_trade["highest"]:
         active_trade["highest"] = price
 
-    profit = ((price - active_trade["entry"]) / active_trade["entry"]) * 100
+    profit = (
+        (price - active_trade["entry"])
+        / active_trade["entry"]
+    ) * 100
 
-    # 📊 Update
-    send(f"📊 {symbol} | {price:.2f} | {profit:.2f}%")
+    send(f"📊 {symbol} | ${price:.2f} | {profit:.2f}%")
 
-    # 🔒 Lock profit
+    # lock profit
     if profit > 5 and not active_trade["locked"]:
         active_trade["locked"] = True
-        send(f"🔒 LOCK PROFIT {symbol} +{profit:.2f}%")
 
-    # ⚠️ Trailing exit
-    drop = ((active_trade["highest"] - price) / active_trade["highest"]) * 100
+        send(
+            f"🔒 LOCK PROFIT {symbol} "
+            f"+{profit:.2f}%"
+        )
+
+    # trailing stop
+    drop = (
+        (active_trade["highest"] - price)
+        / active_trade["highest"]
+    ) * 100
+
     if active_trade["locked"] and drop > 2:
-        send(f"⚠️ EXIT (Trailing) {symbol} +{profit:.2f}%")
+
+        send(
+            f"⚠️ EXIT (Trailing) "
+            f"{symbol} +{profit:.2f}%"
+        )
+
         active_trade = None
+        gc.collect()
         return
 
-    # ❌ Stop loss
+    # stop loss
     if price <= active_trade["stop"]:
-        send(f"❌ STOP LOSS {symbol} at {price:.2f}")
+
+        send(
+            f"❌ STOP LOSS "
+            f"{symbol} at ${price:.2f}"
+        )
+
         active_trade = None
+        gc.collect()
         return
 
-    # 🎯 Target
+    # target
     if price >= active_trade["target"]:
-        send(f"🎯 TARGET HIT {symbol} +{profit:.2f}%")
+
+        send(
+            f"🎯 TARGET HIT "
+            f"{symbol} +{profit:.2f}%"
+        )
+
         active_trade = None
+        gc.collect()
 
 # ===== MAIN =====
 def run():
-    global active_trade, last_heartbeat
+    global active_trade
+    global last_heartbeat
 
     send("🚀 BOT LIVE (Single Trade Manager)")
 
     while True:
+
         try:
             now = time.time()
 
-            # 💓 Heartbeat
+            # heartbeat every hour
             if now - last_heartbeat > 3600:
-                send(f"💓 Alive {datetime.now(UTC).strftime('%H:%M:%S')}")
+
+                send(
+                    f"💓 Alive "
+                    f"{datetime.now(UTC).strftime('%H:%M:%S UTC')}"
+                )
+
                 last_heartbeat = now
 
-            # ===== NO TRADE =====
+            # ===== NO ACTIVE TRADE =====
             if not active_trade:
+
                 stock = find_stock()
 
-                if stock:
-                    closes = get_data(stock)
-                    if not closes:
-                        continue
+                closes = get_data(stock)
 
-                    price = closes[-1]
+                if not closes:
+                    time.sleep(CHECK_INTERVAL)
+                    continue
 
-                    active_trade = {
-                        "symbol": stock,
-                        "entry": price,
-                        "target": price * 1.12,
-                        "stop": price * 0.95,
-                        "highest": price,
-                        "locked": False
-                    }
+                price = closes[-1]
 
-                    send(f"""🚀 NEW TRADE: {stock}
+                active_trade = {
+                    "symbol": stock,
+                    "entry": price,
+                    "target": round(price * 1.12, 2),
+                    "stop": round(price * 0.95, 2),
+                    "highest": price,
+                    "locked": False
+                }
 
-Entry: {price:.2f}
-Target: {price*1.12:.2f}
-Stop: {price*0.95:.2f}
-
-Mode: Single Trade Active
-""")
+                send(
+                    f"🚀 NEW TRADE: {stock}\n\n"
+                    f"Entry: ${price:.2f}\n"
+                    f"Target: ${price * 1.12:.2f}\n"
+                    f"Stop: ${price * 0.95:.2f}\n\n"
+                    f"Mode: Single Trade Active"
+                )
 
             else:
                 manage_trade()
 
+            # memory cleanup
+            gc.collect()
+
             time.sleep(CHECK_INTERVAL)
 
         except Exception as e:
-            print("ERROR:", e, flush=True)
-            time.sleep(5)
+
+            print(f"MAIN ERROR: {e}", flush=True)
+
+            gc.collect()
+
+            time.sleep(10)
 
 # ===== START =====
 if __name__ == "__main__":
