@@ -1,17 +1,16 @@
+print("BOT STARTING...")
+
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import requests
 import time
 
 from datetime import datetime, timedelta
 
-from ta.trend import EMAIndicator, MACD
-from ta.momentum import RSIIndicator
-from ta.volume import VolumeWeightedAveragePrice
-
-# =========================================
+# =====================================
 # SETTINGS
-# =========================================
+# =====================================
 
 SYMBOL = "PLTR"
 
@@ -31,23 +30,20 @@ COOLDOWN_MINUTES = 15
 
 CHECK_INTERVAL = 60
 
-# =========================================
+# =====================================
 # STATE VARIABLES
-# =========================================
+# =====================================
 
 in_position = False
-
 entry_price = 0
-
 highest_profit = 0
 
 daily_trades = 0
-
 last_trade_time = None
 
-# =========================================
-# TELEGRAM FUNCTION
-# =========================================
+# =====================================
+# TELEGRAM
+# =====================================
 
 def send_telegram(message):
 
@@ -64,9 +60,9 @@ def send_telegram(message):
     except Exception as e:
         print(e)
 
-# =========================================
-# GET MARKET DATA
-# =========================================
+# =====================================
+# GET DATA
+# =====================================
 
 def get_data():
 
@@ -82,47 +78,76 @@ def get_data():
 
     return df
 
-# =========================================
-# CALCULATE INDICATORS
-# =========================================
+# =====================================
+# RSI
+# =====================================
+
+def calculate_rsi(series, period=14):
+
+    delta = series.diff()
+
+    gain = delta.where(delta > 0, 0)
+
+    loss = -delta.where(delta < 0, 0)
+
+    avg_gain = gain.rolling(period).mean()
+
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss
+
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+# =====================================
+# INDICATORS
+# =====================================
 
 def calculate_indicators(df):
 
-    df['EMA9'] = EMAIndicator(
-        close=df['Close'],
-        window=9
-    ).ema_indicator()
+    # EMA
+    df['EMA9'] = df['Close'].ewm(span=9).mean()
 
-    df['EMA20'] = EMAIndicator(
-        close=df['Close'],
-        window=20
-    ).ema_indicator()
+    df['EMA20'] = df['Close'].ewm(span=20).mean()
 
-    macd = MACD(close=df['Close'])
+    # MACD
+    ema12 = df['Close'].ewm(span=12).mean()
 
-    df['MACD_HIST'] = macd.macd_diff()
+    ema26 = df['Close'].ewm(span=26).mean()
 
-    df['RSI'] = RSIIndicator(
-        close=df['Close'],
-        window=14
-    ).rsi()
+    df['MACD'] = ema12 - ema26
 
-    vwap = VolumeWeightedAveragePrice(
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        volume=df['Volume']
-    )
+    signal = df['MACD'].ewm(span=9).mean()
 
-    df['VWAP'] = vwap.volume_weighted_average_price()
+    df['MACD_HIST'] = df['MACD'] - signal
 
+    # RSI
+    df['RSI'] = calculate_rsi(df['Close'])
+
+    # VWAP
+    typical_price = (
+        df['High'] +
+        df['Low'] +
+        df['Close']
+    ) / 3
+
+    cumulative_tp_vol = (
+        typical_price * df['Volume']
+    ).cumsum()
+
+    cumulative_vol = df['Volume'].cumsum()
+
+    df['VWAP'] = cumulative_tp_vol / cumulative_vol
+
+    # Volume average
     df['VOL_AVG'] = df['Volume'].rolling(20).mean()
 
     return df
 
-# =========================================
+# =====================================
 # BUY SIGNAL
-# =========================================
+# =====================================
 
 def buy_signal(df):
 
@@ -158,9 +183,9 @@ def buy_signal(df):
         and not last3_red
     )
 
-# =========================================
+# =====================================
 # START BOT
-# =========================================
+# =====================================
 
 send_telegram("🤖 Trading Bot Started")
 
@@ -174,9 +199,9 @@ while True:
         if now.hour == 0 and now.minute == 0:
             daily_trades = 0
 
-        # COOLDOWN
         cooldown_active = False
 
+        # COOLDOWN
         if last_trade_time:
 
             if datetime.now() < (
@@ -195,14 +220,14 @@ while True:
 
             continue
 
-        # INDICATORS
+        # CALCULATE INDICATORS
         df = calculate_indicators(df)
 
         current_price = df['Close'].iloc[-1]
 
-        # =====================================
-        # BUY LOGIC
-        # =====================================
+        # =================================
+        # BUY
+        # =================================
 
         if (
             not in_position
@@ -227,9 +252,9 @@ while True:
                     f"Price: ${current_price:.2f}"
                 )
 
-        # =====================================
-        # SELL LOGIC
-        # =====================================
+        # =================================
+        # SELL MANAGEMENT
+        # =================================
 
         elif in_position:
 
@@ -283,7 +308,7 @@ while True:
 
                 in_position = False
 
-            # LIVE STATUS
+            # LIVE UPDATE
             else:
 
                 send_telegram(
@@ -292,7 +317,6 @@ while True:
                     f"Profit: {profit_percent:.2f}%"
                 )
 
-        # WAIT
         time.sleep(CHECK_INTERVAL)
 
     except Exception as e:
