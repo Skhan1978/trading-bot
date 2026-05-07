@@ -1,4 +1,3 @@
-import os
 import time
 import gc
 from datetime import datetime, UTC
@@ -10,7 +9,7 @@ import yfinance as yf
 # CONFIG
 # =========================
 
-TELEGRAM_TOKEN ="8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
+TELEGRAM_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 CHAT_ID = "7216850185"
 
 CHECK_INTERVAL = 300  # 5 minutes
@@ -34,6 +33,7 @@ WATCHLIST = [
 
 active_trade = None
 last_heartbeat = 0
+startup_sent = False
 
 # =========================
 # REQUEST SESSION
@@ -48,9 +48,6 @@ session = requests.Session()
 def send(msg):
 
     try:
-        # debug info
-        print("TOKEN:", TELEGRAM_TOKEN, flush=True)
-        print("CHAT_ID:", CHAT_ID, flush=True)
 
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
@@ -64,7 +61,6 @@ def send(msg):
         )
 
         print("TELEGRAM STATUS:", response.status_code, flush=True)
-        print("TELEGRAM RESPONSE:", response.text, flush=True)
 
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
@@ -76,6 +72,7 @@ def send(msg):
 def get_data(symbol):
 
     try:
+
         df = yf.download(
             tickers=symbol,
             period="5d",
@@ -90,7 +87,7 @@ def get_data(symbol):
 
         closes = df["Close"]
 
-        # Fix newer yfinance versions
+        # fix newer yfinance versions
         if hasattr(closes, "columns"):
             closes = closes.iloc[:, 0]
 
@@ -122,6 +119,7 @@ def find_stock():
             continue
 
         try:
+
             price = closes[-1]
 
             ma20 = sum(closes[-20:]) / 20
@@ -164,7 +162,7 @@ def manage_trade():
 
     price = closes[-1]
 
-    # highest price update
+    # update highest
     if price > active_trade["highest"]:
         active_trade["highest"] = price
 
@@ -234,12 +232,19 @@ def run():
 
     global active_trade
     global last_heartbeat
+    global startup_sent
 
-    send("🚀 BOT LIVE (Single Trade Manager)")
+    # prevent duplicate startup messages
+    if not startup_sent:
+
+        send("🚀 BOT LIVE (Single Trade Manager)")
+
+        startup_sent = True
 
     while True:
 
         try:
+
             now = time.time()
 
             # heartbeat every hour
@@ -285,6 +290,10 @@ def run():
                     f"Stop: ${price * 0.95:.2f}\n\n"
                     f"Mode: Single Trade Active"
                 )
+
+            # =========================
+            # MANAGE ACTIVE TRADE
+            # =========================
 
             else:
                 manage_trade()
