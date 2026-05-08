@@ -5,8 +5,11 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+import warnings
 
 from datetime import datetime, timedelta
+
+warnings.filterwarnings("ignore")
 
 # =====================================
 # SETTINGS
@@ -27,7 +30,7 @@ MAX_TRADES_PER_DAY = 3
 
 COOLDOWN_MINUTES = 20
 
-CHECK_INTERVAL = 60
+CHECK_INTERVAL = 300  # 5 minutes
 
 # =====================================
 # STATE VARIABLES
@@ -55,10 +58,10 @@ def send_telegram(message):
     }
 
     try:
-        requests.post(url, data=payload)
+        requests.post(url, data=payload, timeout=10)
 
     except Exception as e:
-        print(e)
+        print(f"Telegram Error: {e}")
 
 # =====================================
 # GET DATA
@@ -66,17 +69,32 @@ def send_telegram(message):
 
 def get_data():
 
-    df = yf.download(
-        tickers=SYMBOL,
-        period="2d",
-        interval="1m",
-        auto_adjust=True,
-        progress=False
-    )
+    try:
 
-    df.dropna(inplace=True)
+        df = yf.download(
+            tickers=SYMBOL,
+            period="5d",
+            interval="5m",
+            auto_adjust=True,
+            progress=False,
+            threads=False
+        )
 
-    return df
+        if df.empty:
+
+            print("No market data returned")
+
+            return None
+
+        df.dropna(inplace=True)
+
+        return df
+
+    except Exception as e:
+
+        print(f"DATA ERROR: {e}")
+
+        return None
 
 # =====================================
 # RSI
@@ -108,11 +126,14 @@ def calculate_indicators(df):
 
     # EMA
     df['EMA9'] = df['Close'].ewm(span=9).mean()
+
     df['EMA20'] = df['Close'].ewm(span=20).mean()
+
     df['EMA50'] = df['Close'].ewm(span=50).mean()
 
     # MACD
     ema12 = df['Close'].ewm(span=12).mean()
+
     ema26 = df['Close'].ewm(span=26).mean()
 
     df['MACD'] = ema12 - ema26
@@ -126,9 +147,9 @@ def calculate_indicators(df):
 
     # VWAP
     typical_price = (
-        df['High'] +
-        df['Low'] +
-        df['Close']
+        df['High']
+        + df['Low']
+        + df['Close']
     ) / 3
 
     cumulative_tp_vol = (
@@ -139,7 +160,7 @@ def calculate_indicators(df):
 
     df['VWAP'] = cumulative_tp_vol / cumulative_vol
 
-    # Volume average
+    # Average Volume
     df['VOL_AVG'] = df['Volume'].rolling(20).mean()
 
     return df
@@ -152,11 +173,19 @@ def market_open():
 
     now = datetime.now()
 
+    weekday = now.weekday()
+
+    # Skip weekends
+    if weekday >= 5:
+
+        return False
+
     hour = now.hour
     minute = now.minute
 
     current = hour * 60 + minute
 
+    # US market hours
     market_start = 9 * 60 + 35
     market_end = 15 * 60 + 45
 
@@ -169,45 +198,60 @@ def market_open():
 def buy_signal(df):
 
     latest = df.iloc[-1]
+
     previous = df.iloc[-2]
 
     price = latest['Close']
 
-    # Strong trend confirmation
+    # Strong trend
     bullish_trend = (
+
         price > latest['VWAP']
+
         and latest['EMA9'] > latest['EMA20']
+
         and latest['EMA20'] > latest['EMA50']
     )
 
     # Momentum confirmation
     momentum_good = (
+
         45 < latest['RSI'] < 70
+
         and latest['MACD_HIST'] > 0
     )
 
-    # Volume confirmation
+    # Volume spike
     volume_good = (
+
         latest['Volume']
         > latest['VOL_AVG'] * 1.3
     )
 
-    # Pullback continuation setup
+    # Pullback recovery
     bullish_recovery = (
+
         previous['Close'] < previous['EMA9']
+
         and latest['Close'] > latest['EMA9']
     )
 
-    # Avoid weak candles
+    # Strong candle
     strong_candle = (
+
         latest['Close'] > latest['Open']
     )
 
     return (
+
         bullish_trend
+
         and momentum_good
+
         and volume_good
+
         and bullish_recovery
+
         and strong_candle
     )
 
@@ -223,51 +267,76 @@ while True:
 
         now = datetime.now()
 
-        # Only trade during market hours
+        # =====================================
+        # MARKET HOURS CHECK
+        # =====================================
+
         if not market_open():
 
-            time.sleep(60)
+            print("Market closed...")
+
+            time.sleep(300)
 
             continue
 
-        # Reset daily trades
+        # =====================================
+        # RESET DAILY TRADES
+        # =====================================
+
         if now.hour == 0 and now.minute == 0:
 
             daily_trades = 0
 
+        # =====================================
+        # COOLDOWN
+        # =====================================
+
         cooldown_active = False
 
-        # Cooldown
         if last_trade_time:
 
             if datetime.now() < (
+
                 last_trade_time
                 + timedelta(minutes=COOLDOWN_MINUTES)
             ):
 
                 cooldown_active = True
 
-        # Get Data
+        # =====================================
+        # GET MARKET DATA
+        # =====================================
+
         df = get_data()
 
-        if len(df) < 60:
+        if df is None or len(df) < 60:
+
+            print("Waiting for valid data...")
 
             time.sleep(CHECK_INTERVAL)
 
             continue
 
-        # Indicators
+        # =====================================
+        # CALCULATE INDICATORS
+        # =====================================
+
         df = calculate_indicators(df)
 
         current_price = df['Close'].iloc[-1]
 
-        # =================================
-        # BUY
-        # =================================
+        print(f"{SYMBOL} Price: {current_price:.2f}")
+
+        # =====================================
+        # BUY LOGIC
+        # =====================================
 
         if (
+
             not in_position
+
             and not cooldown_active
+
             and daily_trades < MAX_TRADES_PER_DAY
         ):
 
@@ -286,37 +355,51 @@ while True:
                 latest = df.iloc[-1]
 
                 send_telegram(
+
                     f"🟢 BUY SIGNAL\n\n"
+
                     f"Stock: {SYMBOL}\n"
+
                     f"Entry: ${current_price:.2f}\n"
+
                     f"RSI: {latest['RSI']:.1f}\n"
+
                     f"Volume Spike Confirmed\n"
+
                     f"Trend: Bullish"
                 )
 
-        # =================================
+        # =====================================
         # POSITION MANAGEMENT
-        # =================================
+        # =====================================
 
         elif in_position:
 
             profit_percent = (
+
                 (current_price - entry_price)
                 / entry_price
             ) * 100
 
             highest_profit = max(
+
                 highest_profit,
                 profit_percent
             )
+
+            print(f"PnL: {profit_percent:.2f}%")
 
             # STOP LOSS
             if profit_percent <= STOP_LOSS:
 
                 send_telegram(
+
                     f"🔴 STOP LOSS HIT\n\n"
+
                     f"{SYMBOL}\n"
+
                     f"Exit: ${current_price:.2f}\n"
+
                     f"PnL: {profit_percent:.2f}%"
                 )
 
@@ -326,9 +409,13 @@ while True:
             elif profit_percent >= TAKE_PROFIT:
 
                 send_telegram(
+
                     f"💰 TAKE PROFIT HIT\n\n"
+
                     f"{SYMBOL}\n"
+
                     f"Exit: ${current_price:.2f}\n"
+
                     f"PnL: {profit_percent:.2f}%"
                 )
 
@@ -336,37 +423,62 @@ while True:
 
             # TRAILING STOP
             elif (
+
                 highest_profit >= TRAILING_TRIGGER
-                and profit_percent <
-                (highest_profit - TRAILING_STOP)
+
+                and profit_percent
+                < (highest_profit - TRAILING_STOP)
             ):
 
                 send_telegram(
+
                     f"📉 TRAILING STOP HIT\n\n"
+
                     f"{SYMBOL}\n"
+
                     f"Exit: ${current_price:.2f}\n"
+
                     f"PnL: {profit_percent:.2f}%"
                 )
 
                 in_position = False
 
-            # Update every 15 minutes only
-            elif now.minute % 15 == 0 and now.minute != last_update_minute:
+            # UPDATE EVERY 15 MINUTES
+            elif (
+
+                now.minute % 15 == 0
+
+                and now.minute != last_update_minute
+            ):
 
                 last_update_minute = now.minute
 
                 send_telegram(
+
                     f"📊 OPEN POSITION\n\n"
+
                     f"{SYMBOL}\n"
+
                     f"Price: ${current_price:.2f}\n"
+
                     f"PnL: {profit_percent:.2f}%\n"
+
                     f"Highest: {highest_profit:.2f}%"
                 )
+
+        # =====================================
+        # WAIT
+        # =====================================
 
         time.sleep(CHECK_INTERVAL)
 
     except Exception as e:
 
-        send_telegram(f"⚠️ ERROR: {str(e)}")
+        print(f"MAIN LOOP ERROR: {e}")
+
+        send_telegram(
+
+            f"⚠️ BOT ERROR\n\n{str(e)}"
+        )
 
         time.sleep(60)
