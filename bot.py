@@ -1,4 +1,4 @@
-print("BOT STARTING...")
+print("🚀 BOT STARTING...")
 
 import yfinance as yf
 import pandas as pd
@@ -6,6 +6,7 @@ import numpy as np
 import requests
 import time
 import warnings
+import pytz
 
 from datetime import datetime, timedelta
 
@@ -20,15 +21,15 @@ SYMBOL = "PLTR"
 TELEGRAM_BOT_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
 TELEGRAM_CHAT_ID = "7216850185"
 
-STOP_LOSS = -1.2
-TAKE_PROFIT = 3.0
+STOP_LOSS = -1.5
+TAKE_PROFIT = 4.0
 
-TRAILING_TRIGGER = 1.5
-TRAILING_STOP = 0.7
+TRAILING_TRIGGER = 2.0
+TRAILING_STOP = 1.0
 
-MAX_TRADES_PER_DAY = 3
+MAX_TRADES_PER_DAY = 5
 
-COOLDOWN_MINUTES = 20
+COOLDOWN_MINUTES = 15
 
 CHECK_INTERVAL = 300  # 5 minutes
 
@@ -50,21 +51,49 @@ last_update_minute = -1
 
 def send_telegram(message):
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
-
     try:
-        requests.post(url, data=payload, timeout=10)
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message
+        }
+
+        response = requests.post(
+            url,
+            data=payload,
+            timeout=15
+        )
+
+        print("Telegram sent:", response.status_code)
 
     except Exception as e:
-        print(f"Telegram Error: {e}")
+
+        print("Telegram Error:", e)
 
 # =====================================
-# GET DATA
+# MARKET HOURS
+# =====================================
+
+def market_open():
+
+    eastern = pytz.timezone('US/Eastern')
+
+    now = datetime.now(eastern)
+
+    if now.weekday() >= 5:
+        return False
+
+    current = now.hour * 60 + now.minute
+
+    market_start = 9 * 60 + 35
+    market_end = 15 * 60 + 55
+
+    return market_start <= current <= market_end
+
+# =====================================
+# DATA
 # =====================================
 
 def get_data():
@@ -81,9 +110,6 @@ def get_data():
         )
 
         if df.empty:
-
-            print("No market data returned")
-
             return None
 
         df.dropna(inplace=True)
@@ -92,7 +118,7 @@ def get_data():
 
     except Exception as e:
 
-        print(f"DATA ERROR: {e}")
+        print("DATA ERROR:", e)
 
         return None
 
@@ -124,14 +150,10 @@ def calculate_rsi(series, period=14):
 
 def calculate_indicators(df):
 
-    # EMA
     df['EMA9'] = df['Close'].ewm(span=9).mean()
 
     df['EMA20'] = df['Close'].ewm(span=20).mean()
 
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-
-    # MACD
     ema12 = df['Close'].ewm(span=12).mean()
 
     ema26 = df['Close'].ewm(span=26).mean()
@@ -142,10 +164,8 @@ def calculate_indicators(df):
 
     df['MACD_HIST'] = df['MACD'] - signal
 
-    # RSI
     df['RSI'] = calculate_rsi(df['Close'])
 
-    # VWAP
     typical_price = (
         df['High']
         + df['Low']
@@ -160,36 +180,13 @@ def calculate_indicators(df):
 
     df['VWAP'] = cumulative_tp_vol / cumulative_vol
 
-    # Average Volume
-    df['VOL_AVG'] = df['Volume'].rolling(20).mean()
+    df['VOL_AVG'] = (
+        df['Volume']
+        .rolling(20)
+        .mean()
+    )
 
     return df
-
-# =====================================
-# MARKET HOURS FILTER
-# =====================================
-
-def market_open():
-
-    now = datetime.now()
-
-    weekday = now.weekday()
-
-    # Skip weekends
-    if weekday >= 5:
-
-        return False
-
-    hour = now.hour
-    minute = now.minute
-
-    current = hour * 60 + minute
-
-    # US market hours
-    market_start = 9 * 60 + 35
-    market_end = 15 * 60 + 45
-
-    return market_start <= current <= market_end
 
 # =====================================
 # BUY SIGNAL
@@ -199,47 +196,34 @@ def buy_signal(df):
 
     latest = df.iloc[-1]
 
-    previous = df.iloc[-2]
-
     price = latest['Close']
 
-    # Strong trend
     bullish_trend = (
 
         price > latest['VWAP']
 
         and latest['EMA9'] > latest['EMA20']
-
-        and latest['EMA20'] > latest['EMA50']
     )
 
-    # Momentum confirmation
     momentum_good = (
 
-        45 < latest['RSI'] < 70
+        latest['MACD_HIST'] > 0
 
-        and latest['MACD_HIST'] > 0
+        and latest['RSI'] > 52
+
+        and latest['RSI'] < 75
     )
 
-    # Volume spike
     volume_good = (
 
         latest['Volume']
-        > latest['VOL_AVG'] * 1.15
+        > latest['VOL_AVG'] * 1.05
     )
 
-    # Pullback recovery
-    bullish_recovery = (
-
-        previous['Close'] < previous['EMA9']
-
-        and latest['Close'] > latest['EMA9']
-    )
-
-    # Strong candle
     strong_candle = (
 
-        latest['Close'] > latest['Open']
+        latest['Close']
+        > latest['Open']
     )
 
     return (
@@ -250,16 +234,18 @@ def buy_signal(df):
 
         and volume_good
 
-        and bullish_recovery
-
         and strong_candle
     )
 
 # =====================================
-# START BOT
+# STARTUP ALERT
 # =====================================
 
-send_telegram(f"🤖 {SYMBOL} Trading Bot Started")
+send_telegram(f"🚀 {SYMBOL} BOT LIVE")
+
+# =====================================
+# MAIN LOOP
+# =====================================
 
 while True:
 
@@ -268,19 +254,19 @@ while True:
         now = datetime.now()
 
         # =====================================
-        # MARKET HOURS CHECK
+        # MARKET HOURS
         # =====================================
 
         if not market_open():
 
-            print("Market closed...")
+            print("Market closed")
 
             time.sleep(300)
 
             continue
 
         # =====================================
-        # RESET DAILY TRADES
+        # RESET TRADES DAILY
         # =====================================
 
         if now.hour == 0 and now.minute == 0:
@@ -304,31 +290,33 @@ while True:
                 cooldown_active = True
 
         # =====================================
-        # GET MARKET DATA
+        # GET DATA
         # =====================================
 
         df = get_data()
 
-        if df is None or len(df) < 60:
+        if df is None or len(df) < 30:
 
-            print("Waiting for valid data...")
+            print("Waiting for data")
 
             time.sleep(CHECK_INTERVAL)
 
             continue
 
-        # =====================================
-        # CALCULATE INDICATORS
-        # =====================================
-
         df = calculate_indicators(df)
 
-        current_price = df['Close'].iloc[-1]
+        current_price = float(df['Close'].iloc[-1])
 
-        print(f"{SYMBOL} Price: {current_price:.2f}")
+        latest = df.iloc[-1]
+
+        print(
+            f"{SYMBOL} | "
+            f"Price: {current_price:.2f} | "
+            f"RSI: {latest['RSI']:.1f}"
+        )
 
         # =====================================
-        # BUY LOGIC
+        # BUY ENTRY
         # =====================================
 
         if (
@@ -352,8 +340,6 @@ while True:
 
                 last_trade_time = datetime.now()
 
-                latest = df.iloc[-1]
-
                 send_telegram(
 
                     f"🟢 BUY SIGNAL\n\n"
@@ -364,9 +350,9 @@ while True:
 
                     f"RSI: {latest['RSI']:.1f}\n"
 
-                    f"Volume Spike Confirmed\n"
+                    f"Volume Surge Detected\n"
 
-                    f"Trend: Bullish"
+                    f"Momentum Bullish"
                 )
 
         # =====================================
@@ -382,7 +368,6 @@ while True:
             ) * 100
 
             highest_profit = max(
-
                 highest_profit,
                 profit_percent
             )
@@ -394,7 +379,7 @@ while True:
 
                 send_telegram(
 
-                    f"🔴 STOP LOSS HIT\n\n"
+                    f"🔴 STOP LOSS\n\n"
 
                     f"{SYMBOL}\n"
 
@@ -410,7 +395,7 @@ while True:
 
                 send_telegram(
 
-                    f"💰 TAKE PROFIT HIT\n\n"
+                    f"💰 TAKE PROFIT\n\n"
 
                     f"{SYMBOL}\n"
 
@@ -432,7 +417,7 @@ while True:
 
                 send_telegram(
 
-                    f"📉 TRAILING STOP HIT\n\n"
+                    f"📉 TRAILING STOP\n\n"
 
                     f"{SYMBOL}\n"
 
@@ -443,7 +428,7 @@ while True:
 
                 in_position = False
 
-            # UPDATE EVERY 15 MINUTES
+            # POSITION UPDATE
             elif (
 
                 now.minute % 15 == 0
@@ -474,7 +459,7 @@ while True:
 
     except Exception as e:
 
-        print(f"MAIN LOOP ERROR: {e}")
+        print("MAIN LOOP ERROR:", e)
 
         send_telegram(
 
