@@ -15,18 +15,17 @@ from datetime import datetime, timedelta
 SYMBOL = "PLTR"
 
 TELEGRAM_BOT_TOKEN = "8268157455:AAElh_Fi0znhxEhVkwbK1Y2fhRMoUA65TI4"
-
 TELEGRAM_CHAT_ID = "7216850185"
 
-STOP_LOSS = -1.0
-TAKE_PROFIT = 2.5
+STOP_LOSS = -1.2
+TAKE_PROFIT = 3.0
 
-TRAILING_TRIGGER = 1.0
-TRAILING_STOP = 0.5
+TRAILING_TRIGGER = 1.5
+TRAILING_STOP = 0.7
 
-MAX_TRADES_PER_DAY = 2
+MAX_TRADES_PER_DAY = 3
 
-COOLDOWN_MINUTES = 15
+COOLDOWN_MINUTES = 20
 
 CHECK_INTERVAL = 60
 
@@ -40,6 +39,7 @@ highest_profit = 0
 
 daily_trades = 0
 last_trade_time = None
+last_update_minute = -1
 
 # =====================================
 # TELEGRAM
@@ -108,12 +108,11 @@ def calculate_indicators(df):
 
     # EMA
     df['EMA9'] = df['Close'].ewm(span=9).mean()
-
     df['EMA20'] = df['Close'].ewm(span=20).mean()
+    df['EMA50'] = df['Close'].ewm(span=50).mean()
 
     # MACD
     ema12 = df['Close'].ewm(span=12).mean()
-
     ema26 = df['Close'].ewm(span=26).mean()
 
     df['MACD'] = ema12 - ema26
@@ -146,48 +145,77 @@ def calculate_indicators(df):
     return df
 
 # =====================================
+# MARKET HOURS FILTER
+# =====================================
+
+def market_open():
+
+    now = datetime.now()
+
+    hour = now.hour
+    minute = now.minute
+
+    current = hour * 60 + minute
+
+    market_start = 9 * 60 + 35
+    market_end = 15 * 60 + 45
+
+    return market_start <= current <= market_end
+
+# =====================================
 # BUY SIGNAL
 # =====================================
 
 def buy_signal(df):
 
     latest = df.iloc[-1]
+    previous = df.iloc[-2]
 
     price = latest['Close']
 
-    trend_bullish = (
+    # Strong trend confirmation
+    bullish_trend = (
         price > latest['VWAP']
         and latest['EMA9'] > latest['EMA20']
+        and latest['EMA20'] > latest['EMA50']
     )
 
+    # Momentum confirmation
     momentum_good = (
-        latest['RSI'] > 40
+        45 < latest['RSI'] < 70
         and latest['MACD_HIST'] > 0
     )
 
-    volume_spike = (
+    # Volume confirmation
+    volume_good = (
         latest['Volume']
-        > latest['VOL_AVG'] * 1.5
+        > latest['VOL_AVG'] * 1.3
     )
 
-    last3_red = (
-        df['Close'].iloc[-1] < df['Open'].iloc[-1]
-        and df['Close'].iloc[-2] < df['Open'].iloc[-2]
-        and df['Close'].iloc[-3] < df['Open'].iloc[-3]
+    # Pullback continuation setup
+    bullish_recovery = (
+        previous['Close'] < previous['EMA9']
+        and latest['Close'] > latest['EMA9']
+    )
+
+    # Avoid weak candles
+    strong_candle = (
+        latest['Close'] > latest['Open']
     )
 
     return (
-        trend_bullish
+        bullish_trend
         and momentum_good
-        and volume_spike
-        and not last3_red
+        and volume_good
+        and bullish_recovery
+        and strong_candle
     )
 
 # =====================================
 # START BOT
 # =====================================
 
-send_telegram("🤖 Trading Bot Started")
+send_telegram(f"🤖 {SYMBOL} Trading Bot Started")
 
 while True:
 
@@ -195,13 +223,21 @@ while True:
 
         now = datetime.now()
 
-        # RESET DAILY TRADES
+        # Only trade during market hours
+        if not market_open():
+
+            time.sleep(60)
+
+            continue
+
+        # Reset daily trades
         if now.hour == 0 and now.minute == 0:
+
             daily_trades = 0
 
         cooldown_active = False
 
-        # COOLDOWN
+        # Cooldown
         if last_trade_time:
 
             if datetime.now() < (
@@ -211,16 +247,16 @@ while True:
 
                 cooldown_active = True
 
-        # GET DATA
+        # Get Data
         df = get_data()
 
-        if len(df) < 30:
+        if len(df) < 60:
 
             time.sleep(CHECK_INTERVAL)
 
             continue
 
-        # CALCULATE INDICATORS
+        # Indicators
         df = calculate_indicators(df)
 
         current_price = df['Close'].iloc[-1]
@@ -247,13 +283,19 @@ while True:
 
                 last_trade_time = datetime.now()
 
+                latest = df.iloc[-1]
+
                 send_telegram(
-                    f"🟢 BUY {SYMBOL}\n"
-                    f"Price: ${current_price:.2f}"
+                    f"🟢 BUY SIGNAL\n\n"
+                    f"Stock: {SYMBOL}\n"
+                    f"Entry: ${current_price:.2f}\n"
+                    f"RSI: {latest['RSI']:.1f}\n"
+                    f"Volume Spike Confirmed\n"
+                    f"Trend: Bullish"
                 )
 
         # =================================
-        # SELL MANAGEMENT
+        # POSITION MANAGEMENT
         # =================================
 
         elif in_position:
@@ -272,10 +314,10 @@ while True:
             if profit_percent <= STOP_LOSS:
 
                 send_telegram(
-                    f"🔴 STOP LOSS HIT\n"
+                    f"🔴 STOP LOSS HIT\n\n"
                     f"{SYMBOL}\n"
-                    f"Price: ${current_price:.2f}\n"
-                    f"Profit: {profit_percent:.2f}%"
+                    f"Exit: ${current_price:.2f}\n"
+                    f"PnL: {profit_percent:.2f}%"
                 )
 
                 in_position = False
@@ -284,10 +326,10 @@ while True:
             elif profit_percent >= TAKE_PROFIT:
 
                 send_telegram(
-                    f"💰 TAKE PROFIT HIT\n"
+                    f"💰 TAKE PROFIT HIT\n\n"
                     f"{SYMBOL}\n"
-                    f"Price: ${current_price:.2f}\n"
-                    f"Profit: {profit_percent:.2f}%"
+                    f"Exit: ${current_price:.2f}\n"
+                    f"PnL: {profit_percent:.2f}%"
                 )
 
                 in_position = False
@@ -300,21 +342,25 @@ while True:
             ):
 
                 send_telegram(
-                    f"📉 TRAILING STOP HIT\n"
+                    f"📉 TRAILING STOP HIT\n\n"
                     f"{SYMBOL}\n"
-                    f"Price: ${current_price:.2f}\n"
-                    f"Profit: {profit_percent:.2f}%"
+                    f"Exit: ${current_price:.2f}\n"
+                    f"PnL: {profit_percent:.2f}%"
                 )
 
                 in_position = False
 
-            # LIVE UPDATE
-            else:
+            # Update every 15 minutes only
+            elif now.minute % 15 == 0 and now.minute != last_update_minute:
+
+                last_update_minute = now.minute
 
                 send_telegram(
-                    f"📊 {SYMBOL}\n"
+                    f"📊 OPEN POSITION\n\n"
+                    f"{SYMBOL}\n"
                     f"Price: ${current_price:.2f}\n"
-                    f"Profit: {profit_percent:.2f}%"
+                    f"PnL: {profit_percent:.2f}%\n"
+                    f"Highest: {highest_profit:.2f}%"
                 )
 
         time.sleep(CHECK_INTERVAL)
