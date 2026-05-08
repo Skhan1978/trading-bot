@@ -225,7 +225,7 @@ def buy_signal(df):
     volume_good = (
 
         latest['Volume']
-        > latest['VOL_AVG'] * 1.3
+        > latest['VOL_AVG'] * 1.15
     )
 
     # Pullback recovery
